@@ -893,7 +893,11 @@
     for (const { manifest, css, activate: run } of bundled) {
       await register({ manifest, bundled: true, active: false, error: null, css: css ?? null, load: async () => run, disposers: [] });
     }
-    for (const stored of await backend.listPlugins()) {
+    const installed = await backend.listPlugins().catch((error) => {
+      console.error("[mystremio] cannot list installed plugins", error);
+      return [];
+    });
+    for (const stored of installed) {
       try {
         const plugin = fromStored(stored);
         if (!plugins.get(plugin.manifest.id)?.bundled) {

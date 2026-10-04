@@ -259,7 +259,9 @@ impl MainWindow {
 
         thread::spawn(move || {
             // Mystremio: the official feed would replace this build with stock Stremio.
+            // The receiver must stay alive: the IPC thread panics if its send fails.
             if autoupdater_endpoint.is_none() {
+                updater_rx.iter().for_each(drop);
                 return;
             }
 

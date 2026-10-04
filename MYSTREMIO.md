@@ -23,6 +23,10 @@ cargo build
 cargo run
 ```
 
+A fresh `target\debug` lacks the streaming server, and the app then stays on a blank
+page. Copy these next to the built executable once, as the installer does: the contents
+of `bin\`, plus `server.js`, `stremiover.js` and `libmpv-2.dll`.
+
 To work on the host without rebuilding the shell, point the shell at the overlay build
 folder. The host is then read from disk on every page load, so rebuild the overlay and
 press Ctrl+R in the app:
