@@ -1,5 +1,305 @@
 "use strict";
 (() => {
+  // plugins/addon-reorder/order.ts
+  var metaClaim = ({ manifest }) => {
+    const resource = (manifest.resources ?? []).find((entry) => (typeof entry === "string" ? entry : entry.name) === "meta");
+    if (resource === void 0) return null;
+    const own = typeof resource === "string" ? {} : resource;
+    return {
+      types: own.types ?? manifest.types ?? [],
+      idPrefixes: own.idPrefixes ?? manifest.idPrefixes ?? null
+    };
+  };
+  var prefixesOverlap = (a, b) => a === null || b === null || a.length === 0 || b.length === 0 || a.some((left) => b.some((right) => left.startsWith(right) || right.startsWith(left)));
+  var sharedTypes = (a, b) => prefixesOverlap(a.idPrefixes, b.idPrefixes) ? a.types.filter((type) => b.types.includes(type)) : [];
+  var metadataRivals = (addons) => {
+    const claims = addons.map((addon) => ({ addon, claim: metaClaim(addon) }));
+    const rivals = /* @__PURE__ */ new Map();
+    claims.forEach(({ addon, claim }) => {
+      if (claim === null) return;
+      const found = claims.flatMap((other) => {
+        if (other.addon === addon || other.claim === null) return [];
+        const types = sharedTypes(claim, other.claim);
+        return types.length > 0 ? [{ name: other.addon.manifest.name, types }] : [];
+      });
+      if (found.length > 0) {
+        rivals.set(addon.transportUrl, found);
+      }
+    });
+    return rivals;
+  };
+  var move = (items, from, before) => {
+    const next = [...items];
+    const [item] = next.splice(from, 1);
+    next.splice(before > from ? before - 1 : before, 0, item);
+    return next;
+  };
+  var isSameOrder = (a, b) => a.length === b.length && a.every((value, index) => value === b[index]);
+  var isPermutation = (a, b) => a.length === b.length && new Set(a).size === a.length && a.every((value) => b.includes(value));
+  var listNames = (names) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  var unlockMessage = (name, rivals) => {
+    const types = [...new Set(rivals.flatMap((rival) => rival.types))];
+    return `${name} and ${listNames(rivals.map((rival) => rival.name))} can all describe the same titles (${listNames(types)}). Stremio uses whichever is higher in the list, so moving this addon can change titles, posters and episode lists.`;
+  };
+
+  // plugins/addon-reorder/styles.css
+  var styles_default = '[data-mys-reorder-list] { position: relative; }\n[data-mys-reorder] { position: relative; }\n[data-mys-reorder][data-mys-movable="true"] { cursor: grab; }\n[data-mys-reorder-active], [data-mys-reorder-active] * { cursor: grabbing !important; user-select: none; }\n[data-mys-reorder][data-mys-dragging] { opacity: .4; }\n\n.mys-reorder-handle {\n    position: absolute;\n    top: 50%;\n    left: 2px;\n    transform: translateY(-50%);\n    width: 26px;\n    height: 26px;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    border-radius: 8px;\n    opacity: .6;\n}\n.mys-reorder-handle svg { width: 18px; height: 18px; fill: currentColor; }\n.mys-reorder-handle[data-state="locked"],\n.mys-reorder-handle[data-state="unlocked"] { cursor: pointer; opacity: .8; }\n.mys-reorder-handle[data-state="locked"] { color: #f5b942; }\n.mys-reorder-handle:hover { opacity: 1; background: rgba(255, 255, 255, .1); }\n\n.mys-reorder-indicator {\n    position: absolute;\n    left: 0;\n    right: 0;\n    height: 3px;\n    margin-top: -2px;\n    border-radius: 2px;\n    background: #7b5bf5;\n    pointer-events: none;\n}\n';
+
+  // plugins/addon-reorder/index.ts
+  var ICONS = {
+    grip: '<svg viewBox="0 0 24 24"><path d="M9 5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9-14a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>',
+    locked: '<svg viewBox="0 0 24 24"><path d="M17 9V7A5 5 0 0 0 7 7v2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2ZM9 7a3 3 0 0 1 6 0v2H9V7Z"/></svg>',
+    unlocked: '<svg viewBox="0 0 24 24"><path d="M17 9H9V7a3 3 0 0 1 5.8-1.1l1.9-.7A5 5 0 0 0 7 7v2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Z"/></svg>'
+  };
+  var DRAG_THRESHOLD = 6;
+  var activate = (api) => {
+    let addons = [];
+    let rivals = /* @__PURE__ */ new Map();
+    let saving = false;
+    const unlocked = () => new Set(api.storage.get("unlocked", []));
+    const stateOf = (addon) => {
+      if (!rivals.has(addon.transportUrl)) return "movable";
+      return unlocked().has(addon.transportUrl) ? "unlocked" : "locked";
+    };
+    const toggleLock = async (addon) => {
+      const urls = unlocked();
+      if (urls.has(addon.transportUrl)) {
+        urls.delete(addon.transportUrl);
+      } else {
+        const accepted = await api.ui.confirm({
+          title: `Unlock ${addon.manifest.name}?`,
+          message: unlockMessage(addon.manifest.name, rivals.get(addon.transportUrl) ?? []),
+          confirmLabel: "Unlock"
+        });
+        if (!accepted) return;
+        urls.add(addon.transportUrl);
+      }
+      api.storage.set("unlocked", [...urls]);
+    };
+    const save = async (from, before) => {
+      const current2 = addons.map((addon) => addon.transportUrl);
+      const next = move(current2, from, before);
+      if (saving || isSameOrder(current2, next)) return;
+      saving = true;
+      try {
+        const collection = await api.account.getAddonCollection();
+        if (!isPermutation(current2, collection.map((addon) => addon.transportUrl))) {
+          throw new Error("Your addon list changed in the meantime. Try again.");
+        }
+        await api.account.setAddonCollection(next.map((url) => collection.find((addon) => addon.transportUrl === url)));
+        api.ui.toast({ type: "success", title: "Addon order saved" });
+      } catch (error) {
+        api.ui.toast({ type: "error", title: error instanceof Error ? error.message : String(error) });
+      } finally {
+        saving = false;
+      }
+    };
+    api.anchors.watch("addons.installed.list", (list) => {
+      const indicator = document.createElement("div");
+      indicator.className = "mys-reorder-indicator";
+      let disposed = false;
+      const cards = () => [...list.children].filter((child) => child instanceof HTMLElement && !child.matches(".mys-reorder-indicator"));
+      const refresh = async () => {
+        const [ctx, installed] = await Promise.all([api.core.getState("ctx"), api.core.getState("installed_addons")]);
+        if (disposed) return;
+        addons = ctx.profile.addons;
+        rivals = metadataRivals(addons);
+        const search = list.closest('[class*="addons-content-"]')?.querySelector('[class*="search-bar-"] input');
+        const reorderable = !ctx.profile.addonsLocked && installed?.selected?.request?.type === null && (search?.value ?? "") === "" && cards().length === addons.length;
+        cards().forEach((card, index) => {
+          let handle = card.querySelector(":scope > .mys-reorder-handle");
+          const addon = addons[index];
+          if (!reorderable || addon === void 0) {
+            handle?.remove();
+            delete card.dataset.mysReorder;
+            delete card.dataset.mysMovable;
+            return;
+          }
+          if (handle === null) {
+            handle = document.createElement("div");
+            handle.className = "mys-reorder-handle";
+            handle.addEventListener("click", (event) => {
+              event.stopPropagation();
+              const target = addons[Number(card.dataset.mysReorder)];
+              if (target !== void 0 && stateOf(target) !== "movable") {
+                toggleLock(target);
+              }
+            });
+            card.append(handle);
+          }
+          const state = stateOf(addon);
+          card.dataset.mysReorder = String(index);
+          card.dataset.mysMovable = String(state !== "locked");
+          if (handle.dataset.state !== state) {
+            handle.dataset.state = state;
+            handle.innerHTML = ICONS[state === "movable" ? "grip" : state];
+            handle.title = {
+              movable: "Drag to reorder",
+              locked: "Locked: its position decides where titles get their details. Click to unlock.",
+              unlocked: "Unlocked. Drag to reorder, or click to lock again."
+            }[state];
+          }
+        });
+      };
+      const dropIndex = (y) => {
+        const index = cards().findIndex((card) => {
+          const { top, height } = card.getBoundingClientRect();
+          return y < top + height / 2;
+        });
+        return index === -1 ? cards().length : index;
+      };
+      const showIndicator = (before) => {
+        const all = cards();
+        const edge = before < all.length ? all[before].getBoundingClientRect().top : all[all.length - 1].getBoundingClientRect().bottom;
+        indicator.style.top = `${edge - list.getBoundingClientRect().top + list.scrollTop}px`;
+        list.append(indicator);
+      };
+      const onPointerDown = (down) => {
+        const target = down.target;
+        const card = target.closest("[data-mys-reorder]");
+        const inner = target.closest("[tabindex], a, button, .mys-reorder-handle");
+        if (down.button !== 0 || !card || card.dataset.mysMovable !== "true" || inner !== null && inner !== card) return;
+        const from = Number(card.dataset.mysReorder);
+        let dragging = false;
+        const onMove = (event) => {
+          if (!dragging && Math.abs(event.clientY - down.clientY) < DRAG_THRESHOLD) return;
+          dragging = true;
+          card.dataset.mysDragging = "";
+          list.dataset.mysReorderActive = "";
+          showIndicator(dropIndex(event.clientY));
+        };
+        const stop = () => {
+          document.removeEventListener("pointermove", onMove);
+          document.removeEventListener("pointerup", onUp);
+          document.removeEventListener("pointercancel", stop);
+          indicator.remove();
+          delete card.dataset.mysDragging;
+          delete list.dataset.mysReorderActive;
+        };
+        const onUp = (event) => {
+          stop();
+          if (!dragging) return;
+          document.addEventListener("click", (click) => click.stopPropagation(), { capture: true, once: true });
+          setTimeout(() => save(from, dropIndex(event.clientY)));
+        };
+        document.addEventListener("pointermove", onMove);
+        document.addEventListener("pointerup", onUp);
+        document.addEventListener("pointercancel", stop);
+      };
+      list.dataset.mysReorderList = "";
+      list.addEventListener("pointerdown", onPointerDown);
+      const observer = new MutationObserver(() => refresh());
+      observer.observe(list, { childList: true });
+      document.addEventListener("input", refresh, true);
+      const stopState = api.core.on("state", (models) => {
+        if (models.includes("ctx") || models.includes("installed_addons")) refresh();
+      });
+      const stopSettings = api.storage.onChange(refresh);
+      refresh();
+      return () => {
+        disposed = true;
+        observer.disconnect();
+        stopState();
+        stopSettings();
+        document.removeEventListener("input", refresh, true);
+        list.removeEventListener("pointerdown", onPointerDown);
+        indicator.remove();
+        delete list.dataset.mysReorderList;
+        cards().forEach((card) => {
+          card.querySelector(":scope > .mys-reorder-handle")?.remove();
+          delete card.dataset.mysReorder;
+          delete card.dataset.mysMovable;
+        });
+      };
+    });
+  };
+  var addonReorder = {
+    manifest: {
+      id: "addon-reorder",
+      name: "Addon order",
+      version: "1.0.0",
+      apiVersion: 0,
+      description: "Drag installed addons to change their order. Addons whose position affects title details are locked until you unlock them.",
+      entry: "index.js",
+      anchors: ["addons.installed.list"]
+    },
+    css: styles_default,
+    activate
+  };
+
+  // src/host/account.ts
+  var API_URL = "https://api.strem.io/api/";
+  var BACKUPS_KEY = "mystremio:addon-backups";
+  var MAX_BACKUPS = 10;
+  var PROFILE_KEY = "profile";
+  var core;
+  var startAccount = (transport) => {
+    core = transport;
+  };
+  var request = async (path, body) => {
+    const response = await fetch(`${API_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const { result, error } = await response.json();
+    if (error || result === void 0) {
+      throw new Error(`Stremio account request failed: ${error?.message ?? response.status}`);
+    }
+    return result;
+  };
+  var authKey = async () => (await core.getState("ctx")).profile.auth?.key ?? null;
+  var listBackups = () => {
+    try {
+      const backups = JSON.parse(localStorage.getItem(BACKUPS_KEY) ?? "[]");
+      return Array.isArray(backups) ? backups : [];
+    } catch {
+      return [];
+    }
+  };
+  var saveBackup = (addons) => {
+    const backups = [{ savedAt: Date.now(), addons }, ...listBackups()].slice(0, MAX_BACKUPS);
+    localStorage.setItem(BACKUPS_KEY, JSON.stringify(backups));
+  };
+  var readStoredProfile = async () => {
+    if (localStorage.getItem(PROFILE_KEY) === null) {
+      const { settings } = (await core.getState("ctx")).profile;
+      const update = (value) => core.dispatch({ action: "Ctx", args: { action: "UpdateSettings", args: value } });
+      await update({ ...settings, bingeWatching: !settings.bingeWatching });
+      await update(settings);
+    }
+    const stored = localStorage.getItem(PROFILE_KEY);
+    if (stored === null) {
+      throw new Error("The local profile could not be read");
+    }
+    return JSON.parse(stored);
+  };
+  var getAddonCollection = async () => {
+    const key = await authKey();
+    if (key === null) {
+      return (await readStoredProfile()).addons;
+    }
+    const { addons } = await request("addonCollectionGet", {
+      type: "AddonCollectionGet",
+      authKey: key,
+      update: true
+    });
+    return addons;
+  };
+  var setAddonCollection = async (addons) => {
+    const previous = await getAddonCollection();
+    saveBackup(previous);
+    const key = await authKey();
+    if (key === null) {
+      const profile = await readStoredProfile();
+      localStorage.setItem(PROFILE_KEY, JSON.stringify({ ...profile, addons }));
+      window.location.reload();
+      return;
+    }
+    await request("addonCollectionSet", { type: "AddonCollectionSet", authKey: key, addons });
+    await core.dispatch({ action: "Ctx", args: { action: "PullAddonsFromAPI" } });
+  };
+
   // src/host/anchors.ts
   var ANCHORS = {
     "addons.installed.list": '[class*="addons-container-"] [class*="addons-list-container-"]',
@@ -100,13 +400,13 @@
       }
       const [name, payload] = Array.isArray(message?.args) ? message.args : [];
       if (name !== "overlay-response") return;
-      const request = pending.get(payload.requestId);
-      if (!request) return;
+      const request2 = pending.get(payload.requestId);
+      if (!request2) return;
       pending.delete(payload.requestId);
       if (typeof payload.error === "string") {
-        request.reject(new Error(payload.error));
+        request2.reject(new Error(payload.error));
       } else {
-        request.resolve(payload.result);
+        request2.resolve(payload.result);
       }
     });
     const call = (method, params = {}) => new Promise((resolve, reject) => {
@@ -281,6 +581,12 @@
     next.updatedAt = Date.now();
     store(next);
   };
+  var onSettingsChange = (listener) => {
+    listeners2.add(listener);
+    return () => {
+      listeners2.delete(listener);
+    };
+  };
   var pluginState = (id, bundled) => current.plugins[id] ?? { enabled: bundled, data: {} };
 
   // src/host/ui.ts
@@ -423,7 +729,7 @@
   var plugins = /* @__PURE__ */ new Map();
   var listeners3 = /* @__PURE__ */ new Set();
   var decoder = new TextDecoder();
-  var core;
+  var core2;
   var backend;
   var changed = () => listeners3.forEach((listener) => listener());
   var runHook = (name, value, context) => {
@@ -447,8 +753,8 @@
       id,
       apiVersion: API_VERSION,
       core: {
-        dispatch: (action, model) => core.dispatch(action, model),
-        getState: (model) => core.getState(model),
+        dispatch: (action, model) => core2.dispatch(action, model),
+        getState: (model) => core2.getState(model),
         on: (type, listener) => track(onCore(type, listener))
       },
       anchors: {
@@ -485,8 +791,19 @@
         set: (key, value) => updateSettings((settings) => {
           const state = settings.plugins[id] ?? pluginState(id, plugin.bundled);
           settings.plugins[id] = { ...state, data: { ...state.data, [key]: value } };
-        })
+        }),
+        onChange: (listener) => {
+          let previous = JSON.stringify(pluginState(id, plugin.bundled).data);
+          return track(onSettingsChange(() => {
+            const next = JSON.stringify(pluginState(id, plugin.bundled).data);
+            if (next !== previous) {
+              previous = next;
+              listener();
+            }
+          }));
+        }
       },
+      account: { getAddonCollection, setAddonCollection },
       ui: { toast, confirm }
     };
   };
@@ -501,7 +818,7 @@
     document.querySelector(`style[data-mystremio-plugin="${plugin.manifest.id}"]`)?.remove();
     plugin.active = false;
   };
-  var activate = async (plugin) => {
+  var activate2 = async (plugin) => {
     const { id, anchors = [] } = plugin.manifest;
     plugin.error = null;
     try {
@@ -567,11 +884,11 @@
     }
     plugins.set(plugin.manifest.id, plugin);
     if (pluginState(plugin.manifest.id, plugin.bundled).enabled) {
-      await activate(plugin);
+      await activate2(plugin);
     }
   };
   var startPlugins = async (transport, container, bundled) => {
-    core = transport;
+    core2 = transport;
     backend = container;
     for (const { manifest, css, activate: run } of bundled) {
       await register({ manifest, bundled: true, active: false, error: null, css: css ?? null, load: async () => run, disposers: [] });
@@ -602,7 +919,7 @@
       settings.plugins[id] = { ...pluginState(id, plugin.bundled), enabled };
     });
     if (enabled && !plugin.active) {
-      await activate(plugin);
+      await activate2(plugin);
     } else if (!enabled) {
       deactivate(plugin);
     }
@@ -734,7 +1051,7 @@
   };
 
   // src/host/index.ts
-  var BUNDLED = [];
+  var BUNDLED = [addonReorder];
   var whenBodyExists = () => new Promise((resolve) => {
     if (document.body) {
       resolve();
@@ -743,13 +1060,14 @@
     }
   });
   var start = async (backend2) => {
-    const core2 = await waitForCore();
+    const core3 = await waitForCore();
     await whenBodyExists();
     loadSettings();
+    startAccount(core3);
     startUi();
     startAnchors();
     startPluginsPage();
-    await startPlugins(core2, backend2, BUNDLED);
+    await startPlugins(core3, backend2, BUNDLED);
   };
   if (window.self === window.top && !window.__mystremio) {
     tapCoreEvents();
