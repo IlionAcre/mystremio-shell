@@ -43,7 +43,41 @@
   };
 
   // plugins/addon-reorder/styles.css
-  var styles_default = '[data-mys-reorder-list] { position: relative; }\n[data-mys-reorder] { position: relative; }\n[data-mys-reorder][data-mys-movable="true"] { cursor: grab; }\n[data-mys-reorder-active], [data-mys-reorder-active] * { cursor: grabbing !important; user-select: none; }\n[data-mys-reorder][data-mys-dragging] { opacity: .4; }\n\n.mys-reorder-handle {\n    position: absolute;\n    top: 50%;\n    left: 2px;\n    transform: translateY(-50%);\n    width: 26px;\n    height: 26px;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    border-radius: 8px;\n    opacity: .6;\n}\n.mys-reorder-handle svg { width: 18px; height: 18px; fill: currentColor; }\n.mys-reorder-handle[data-state="locked"],\n.mys-reorder-handle[data-state="unlocked"] { cursor: pointer; opacity: .8; }\n.mys-reorder-handle[data-state="locked"] { color: #f5b942; }\n.mys-reorder-handle:hover { opacity: 1; background: rgba(255, 255, 255, .1); }\n\n.mys-reorder-indicator {\n    position: absolute;\n    left: 0;\n    right: 0;\n    height: 3px;\n    margin-top: -2px;\n    border-radius: 2px;\n    background: #7b5bf5;\n    pointer-events: none;\n}\n';
+  var styles_default = `[data-mys-reorder] { position: relative; }
+[data-mys-reorder][data-mys-movable="true"] { cursor: grab; }
+
+/* While a card is dragged, the others slide out of its way. */
+[data-mys-reorder-active] > [data-mys-reorder] { transition: transform .18s ease; }
+[data-mys-reorder-active], [data-mys-reorder-active] * { cursor: grabbing !important; user-select: none; }
+[data-mys-reorder-active] > [data-mys-dragging],
+[data-mys-reorder-active] > [data-mys-dropping] {
+    z-index: 5;
+    /* The app's cards are translucent; a floating card must hide what is under it. */
+    background-color: #1f1d3a;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, .55), 0 0 0 2px #7b5bf5;
+}
+[data-mys-reorder-active] > [data-mys-dragging] { transition: none; }
+[data-mys-reorder-settling] > [data-mys-reorder] { transition: none !important; }
+
+.mys-reorder-handle {
+    position: absolute;
+    top: 50%;
+    left: 2px;
+    transform: translateY(-50%);
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    opacity: .6;
+}
+.mys-reorder-handle svg { width: 18px; height: 18px; fill: currentColor; }
+.mys-reorder-handle[data-state="locked"],
+.mys-reorder-handle[data-state="unlocked"] { cursor: pointer; opacity: .8; }
+.mys-reorder-handle[data-state="locked"] { color: #f5b942; }
+.mys-reorder-handle:hover { opacity: 1; background: rgba(255, 255, 255, .1); }
+`;
 
   // plugins/addon-reorder/index.ts
   var ICONS = {
@@ -52,10 +86,22 @@
     unlocked: '<svg viewBox="0 0 24 24"><path d="M17 9H9V7a3 3 0 0 1 5.8-1.1l1.9-.7A5 5 0 0 0 7 7v2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Z"/></svg>'
   };
   var DRAG_THRESHOLD = 6;
+  var SETTLE_DURATION = 180;
+  var RENDER_TIMEOUT = 4e3;
+  var SCROLL_EDGE = 70;
+  var SCROLL_SPEED = 14;
+  var scrollParent = (element) => {
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      if (/(auto|scroll)/.test(getComputedStyle(parent).overflowY) && parent.scrollHeight > parent.clientHeight) {
+        return parent;
+      }
+    }
+    return document.documentElement;
+  };
   var activate = (api) => {
     let addons = [];
     let rivals = /* @__PURE__ */ new Map();
-    let saving = false;
+    let busy = false;
     const unlocked = () => new Set(api.storage.get("unlocked", []));
     const stateOf = (addon) => {
       if (!rivals.has(addon.transportUrl)) return "movable";
@@ -76,11 +122,10 @@
       }
       api.storage.set("unlocked", [...urls]);
     };
-    const save = async (from, before) => {
+    const save = async (from, to) => {
       const current2 = addons.map((addon) => addon.transportUrl);
-      const next = move(current2, from, before);
-      if (saving || isSameOrder(current2, next)) return;
-      saving = true;
+      const next = move(current2, from, to > from ? to + 1 : to);
+      if (isSameOrder(current2, next)) return null;
       try {
         const collection = await api.account.getAddonCollection();
         if (!isPermutation(current2, collection.map((addon) => addon.transportUrl))) {
@@ -88,17 +133,15 @@
         }
         await api.account.setAddonCollection(next.map((url) => collection.find((addon) => addon.transportUrl === url)));
         api.ui.toast({ type: "success", title: "Addon order saved" });
+        return next;
       } catch (error) {
         api.ui.toast({ type: "error", title: error instanceof Error ? error.message : String(error) });
-      } finally {
-        saving = false;
+        return null;
       }
     };
     api.anchors.watch("addons.installed.list", (list) => {
-      const indicator = document.createElement("div");
-      indicator.className = "mys-reorder-indicator";
       let disposed = false;
-      const cards = () => [...list.children].filter((child) => child instanceof HTMLElement && !child.matches(".mys-reorder-indicator"));
+      const cards = () => [...list.children].filter((child) => child instanceof HTMLElement);
       const refresh = async () => {
         const [ctx, installed] = await Promise.all([api.core.getState("ctx"), api.core.getState("installed_addons")]);
         if (disposed) return;
@@ -141,50 +184,125 @@
           }
         });
       };
-      const dropIndex = (y) => {
-        const index = cards().findIndex((card) => {
-          const { top, height } = card.getBoundingClientRect();
-          return y < top + height / 2;
+      const rendered = (order) => new Promise((resolve) => {
+        const matches = () => isSameOrder(addons.map((addon) => addon.transportUrl), order);
+        const check = async () => {
+          await refresh();
+          if (matches()) {
+            requestAnimationFrame(() => requestAnimationFrame(finish));
+          }
+        };
+        const stop = api.core.on("state", (models) => {
+          if (models.includes("ctx")) check();
         });
-        return index === -1 ? cards().length : index;
-      };
-      const showIndicator = (before) => {
-        const all = cards();
-        const edge = before < all.length ? all[before].getBoundingClientRect().top : all[all.length - 1].getBoundingClientRect().bottom;
-        indicator.style.top = `${edge - list.getBoundingClientRect().top + list.scrollTop}px`;
-        list.append(indicator);
-      };
+        const timeout = setTimeout(finish, RENDER_TIMEOUT);
+        function finish() {
+          stop();
+          clearTimeout(timeout);
+          resolve();
+        }
+        check();
+      });
       const onPointerDown = (down) => {
         const target = down.target;
         const card = target.closest("[data-mys-reorder]");
         const inner = target.closest("[tabindex], a, button, .mys-reorder-handle");
-        if (down.button !== 0 || !card || card.dataset.mysMovable !== "true" || inner !== null && inner !== card) return;
-        const from = Number(card.dataset.mysReorder);
+        if (busy || down.button !== 0 || !card || card.dataset.mysMovable !== "true" || inner !== null && inner !== card) return;
+        const all = cards();
+        const from = all.indexOf(card);
+        const scroller = scrollParent(list);
+        let rects = [];
+        let step = 0;
+        let startScroll = 0;
+        let to = from;
+        let pointerY = down.clientY;
+        let scrolling = 0;
         let dragging = false;
-        const onMove = (event) => {
-          if (!dragging && Math.abs(event.clientY - down.clientY) < DRAG_THRESHOLD) return;
+        const shiftOf = (index) => {
+          if (index < from && index >= to) return step;
+          if (index > from && index <= to) return -step;
+          return 0;
+        };
+        const draw = () => {
+          const offset = pointerY - down.clientY + scroller.scrollTop - startScroll;
+          const center = rects[from].top + rects[from].height / 2 + offset;
+          to = rects.filter((rect, index) => index !== from && rect.top + rect.height / 2 < center).length;
+          card.style.transform = `translateY(${offset}px)`;
+          all.forEach((other, index) => {
+            if (other !== card) {
+              other.style.transform = `translateY(${shiftOf(index)}px)`;
+            }
+          });
+        };
+        const autoScroll = () => {
+          const { top, bottom } = scroller === document.documentElement ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
+          const speed = pointerY < top + SCROLL_EDGE ? -SCROLL_SPEED : pointerY > bottom - SCROLL_EDGE ? SCROLL_SPEED : 0;
+          if (speed !== 0) {
+            scroller.scrollTop += speed;
+            draw();
+          }
+          scrolling = requestAnimationFrame(autoScroll);
+        };
+        const begin = () => {
           dragging = true;
+          rects = all.map((other) => other.getBoundingClientRect());
+          const gap = rects.length > 1 ? rects[1].top - rects[0].bottom : 0;
+          step = rects[from].height + gap;
+          startScroll = scroller.scrollTop;
           card.dataset.mysDragging = "";
           list.dataset.mysReorderActive = "";
-          showIndicator(dropIndex(event.clientY));
+          scrolling = requestAnimationFrame(autoScroll);
+        };
+        const clear = () => {
+          list.dataset.mysReorderSettling = "";
+          all.forEach((other) => {
+            other.style.transform = "";
+          });
+          delete card.dataset.mysDragging;
+          delete card.dataset.mysDropping;
+          delete list.dataset.mysReorderActive;
+          requestAnimationFrame(() => delete list.dataset.mysReorderSettling);
+        };
+        const onMove = (event) => {
+          pointerY = event.clientY;
+          if (!dragging) {
+            if (Math.abs(event.clientY - down.clientY) < DRAG_THRESHOLD) return;
+            begin();
+          }
+          draw();
         };
         const stop = () => {
           document.removeEventListener("pointermove", onMove);
           document.removeEventListener("pointerup", onUp);
-          document.removeEventListener("pointercancel", stop);
-          indicator.remove();
-          delete card.dataset.mysDragging;
-          delete list.dataset.mysReorderActive;
+          document.removeEventListener("pointercancel", onCancel);
+          cancelAnimationFrame(scrolling);
         };
-        const onUp = (event) => {
+        const onCancel = () => {
+          stop();
+          if (dragging) clear();
+        };
+        const onUp = async () => {
           stop();
           if (!dragging) return;
-          document.addEventListener("click", (click) => click.stopPropagation(), { capture: true, once: true });
-          setTimeout(() => save(from, dropIndex(event.clientY)));
+          const swallow = (click) => click.stopPropagation();
+          document.addEventListener("click", swallow, { capture: true, once: true });
+          setTimeout(() => document.removeEventListener("click", swallow, true));
+          busy = true;
+          const slot = to === from ? 0 : to > from ? rects[to].bottom - rects[from].bottom : rects[to].top - rects[from].top;
+          delete card.dataset.mysDragging;
+          card.dataset.mysDropping = "";
+          card.style.transform = `translateY(${slot}px)`;
+          await new Promise((resolve) => setTimeout(resolve, SETTLE_DURATION));
+          const order = await save(from, to);
+          if (order !== null) {
+            await rendered(order);
+          }
+          clear();
+          busy = false;
         };
         document.addEventListener("pointermove", onMove);
         document.addEventListener("pointerup", onUp);
-        document.addEventListener("pointercancel", stop);
+        document.addEventListener("pointercancel", onCancel);
       };
       list.dataset.mysReorderList = "";
       list.addEventListener("pointerdown", onPointerDown);
@@ -203,10 +321,10 @@
         stopSettings();
         document.removeEventListener("input", refresh, true);
         list.removeEventListener("pointerdown", onPointerDown);
-        indicator.remove();
         delete list.dataset.mysReorderList;
         cards().forEach((card) => {
           card.querySelector(":scope > .mys-reorder-handle")?.remove();
+          card.style.transform = "";
           delete card.dataset.mysReorder;
           delete card.dataset.mysMovable;
         });
@@ -217,7 +335,7 @@
     manifest: {
       id: "addon-reorder",
       name: "Addon order",
-      version: "1.0.0",
+      version: "1.1.0",
       apiVersion: 0,
       description: "Drag installed addons to change their order. Addons whose position affects title details are locked until you unlock them.",
       entry: "index.js",
