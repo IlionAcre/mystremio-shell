@@ -258,6 +258,11 @@ impl MainWindow {
         let autoupdater_setup_file = self.autoupdater_setup_file.clone();
 
         thread::spawn(move || {
+            // Mystremio: the official feed would replace this build with stock Stremio.
+            if autoupdater_endpoint.is_none() {
+                return;
+            }
+
             loop {
                 if let Ok(msg) = updater_rx.recv() {
                     if msg == "check_for_update" {
@@ -402,6 +407,17 @@ impl MainWindow {
                         }
                     }
                     Some("quit") => quit_sender.notice(),
+                    Some("overlay-request") => {
+                        if let Some(params) = msg.get_params().cloned() {
+                            let web_tx_overlay = web_tx_web.clone();
+                            // Downloads can be slow, so they must not block the other commands.
+                            thread::spawn(move || {
+                                if let Some(response) = super::overlay::respond(&params) {
+                                    web_tx_overlay.send(response).ok();
+                                }
+                            });
+                        }
+                    }
                     Some("app-ready") => {
                         hide_splash_sender.notice();
                         web_tx_web

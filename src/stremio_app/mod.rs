@@ -10,6 +10,7 @@ pub mod stremio_wevbiew;
 pub use ipc::RPCResponse;
 pub mod named_pipe;
 pub mod open_media;
+pub mod overlay;
 pub mod splash;
 pub mod systray;
 pub mod window_helper;

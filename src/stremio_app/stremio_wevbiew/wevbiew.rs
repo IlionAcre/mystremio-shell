@@ -243,6 +243,8 @@ impl PartialUi for WebView {
                             window.addEventListener("load", function() {if(initShellComm) try { initShellComm() } catch(e) {}}, false)
 
                             "##, |_| Ok(())).expect("Cannot add script to webview");
+                            wv.execute_script(&crate::stremio_app::overlay::host_script(), |_| Ok(()))
+                                .expect("Cannot add the Mystremio host to webview");
                             Ok(())
                         }).expect("Cannot add content loading");
 

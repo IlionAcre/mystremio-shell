@@ -1,7 +1,7 @@
 use url::Url;
 
-pub const APP_NAME: &str = "Stremio";
-pub const IPC_PATH: &str = "//./pipe/com.stremio5.";
+pub const APP_NAME: &str = "Mystremio";
+pub const IPC_PATH: &str = "//./pipe/com.mystremio.";
 pub const DEV_ENDPOINT: &str = "http://127.0.0.1:11470";
 pub const WEB_ENDPOINT: &str = "https://web.stremio.com/";
 pub const STA_ENDPOINT: &str = "https://staging.strem.io/";
