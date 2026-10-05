@@ -28,6 +28,15 @@
     });
     return rivals;
   };
+  var lockedAddons = (addons) => {
+    const rivals = metadataRivals(addons);
+    addons.forEach((addon) => {
+      if (addon.flags?.protected !== true) {
+        rivals.delete(addon.transportUrl);
+      }
+    });
+    return rivals;
+  };
   var move = (items, from, before) => {
     const next = [...items];
     const [item] = next.splice(from, 1);
@@ -39,7 +48,7 @@
   var listNames = (names) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
   var unlockMessage = (name, rivals) => {
     const types = [...new Set(rivals.flatMap((rival) => rival.types))];
-    return `${name} and ${listNames(rivals.map((rival) => rival.name))} can all describe the same titles (${listNames(types)}). Stremio uses whichever is higher in the list, so moving this addon can change titles, posters and episode lists.`;
+    return `${name} and ${listNames(rivals.map((rival) => rival.name))} can ${rivals.length > 1 ? "all" : "both"} describe the same titles (${listNames(types)}). Stremio uses whichever is higher in the list, so moving this addon can change titles, posters and episode lists.`;
   };
 
   // plugins/addon-reorder/styles.css
@@ -146,7 +155,7 @@
         const [ctx, installed] = await Promise.all([api.core.getState("ctx"), api.core.getState("installed_addons")]);
         if (disposed) return;
         addons = ctx.profile.addons;
-        rivals = metadataRivals(addons);
+        rivals = lockedAddons(addons);
         const search = list.closest('[class*="addons-content-"]')?.querySelector('[class*="search-bar-"] input');
         const reorderable = !ctx.profile.addonsLocked && installed?.selected?.request?.type === null && (search?.value ?? "") === "" && cards().length === addons.length;
         cards().forEach((card, index) => {
@@ -335,9 +344,9 @@
     manifest: {
       id: "addon-reorder",
       name: "Addon order",
-      version: "1.1.0",
+      version: "1.2.0",
       apiVersion: 0,
-      description: "Drag installed addons to change their order. Addons whose position affects title details are locked until you unlock them.",
+      description: "Drag installed addons to change their order. Built-in Stremio addons are locked while another addon can replace their title details.",
       entry: "index.js",
       anchors: ["addons.installed.list"]
     },
