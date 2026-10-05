@@ -472,7 +472,10 @@ ${filename}`),
     const section = el("div", "mys-languages-section");
     section.dataset.mysLanguageList = kind;
     const rows = el("div", "mys-languages-rows");
-    const add = el("select", "mys-input mys-languages-add");
+    const add = el("button", "mys-button mys-languages-add", "+ Add a language");
+    add.dataset.mysAddLanguage = "";
+    const picker = el("div", "mys-languages-picker");
+    picker.hidden = true;
     const commit = (next) => {
       codes = next;
       onChange([...codes]);
@@ -515,14 +518,38 @@ ${filename}`),
       if (codes.length === 0) {
         rows.append(el("div", "mys-muted", kind === "audio" ? "No audio languages: every stream is shown." : "No subtitle languages."));
       }
-      const available = [...kind === "audio" ? [ORIGINAL] : [], ...LANGUAGES.map(({ code }) => code)].filter((code) => !codes.includes(code));
-      add.replaceChildren(new Option("Add a language\u2026", ""), ...available.map((code) => new Option(languageName(code), code)));
-      add.value = "";
+      picker.hidden = true;
     };
-    add.addEventListener("change", () => {
-      if (add.value !== "") commit([...codes, add.value]);
+    const openPicker = () => {
+      const available = [...kind === "audio" ? [ORIGINAL] : [], ...LANGUAGES.map(({ code }) => code)].filter((code) => !codes.includes(code));
+      const search = el("input", "mys-input mys-languages-search");
+      search.placeholder = "Search languages";
+      const options = el("div", "mys-languages-options");
+      const fill = () => {
+        const query = search.value.trim().toLowerCase();
+        const matches = available.filter((code) => languageName(code).toLowerCase().includes(query));
+        options.replaceChildren(...matches.map((code) => {
+          const option = el("button", "mys-languages-option", languageName(code));
+          option.dataset.language = code;
+          option.addEventListener("click", () => commit([...codes, code]));
+          return option;
+        }));
+        if (matches.length === 0) options.append(el("div", "mys-muted", "No language matches."));
+      };
+      search.addEventListener("input", fill);
+      fill();
+      picker.replaceChildren(search, options);
+      picker.hidden = false;
+      search.focus();
+    };
+    add.addEventListener("click", () => {
+      if (picker.hidden) {
+        openPicker();
+      } else {
+        picker.hidden = true;
+      }
     });
-    section.append(el("h3", "", kind === "audio" ? "Audio" : "Subtitles"), rows, add);
+    section.append(el("h3", "", kind === "audio" ? "Audio" : "Subtitles"), rows, add, picker);
     render2();
     return section;
   };
@@ -610,7 +637,17 @@ ${filename}`),
 }
 .mys-streams-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 10px; }
 .mys-streams-status { font-size: 13px; opacity: .8; padding-bottom: 8px; }
-.mys-streams-select { flex: 0 1 auto; appearance: auto; }
+/* A drawn arrow, so it sits a fixed distance from the right edge. */
+.mys-streams-select {
+    flex: 0 1 auto;
+    appearance: none;
+    padding-right: 38px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+    background-size: 14px;
+    cursor: pointer;
+}
 .mys-streams-select option { color: #000; }
 
 .mys-streams-heading {
@@ -648,9 +685,9 @@ ${filename}`),
 .mys-stream-facts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 12px; opacity: .85; }
 .mys-stream-language { padding: 1px 8px; border-radius: 9px; background: rgba(123, 91, 245, .45); }
 
-.mys-streams-order { padding: 7px 10px; display: flex; align-items: center; }
-.mys-streams-order svg { width: 22px; height: 22px; display: block; }
-.mys-streams-episodes { padding: 0 16px 10px; }
+.mys-streams-icon-button { padding: 7px 10px; display: flex; align-items: center; }
+.mys-streams-icon-button svg { width: 22px; height: 22px; display: block; }
+.mys-streams-icon-button[data-mys-languages="custom"] { color: #b7a4ff; box-shadow: inset 0 0 0 1px #7b5bf5; }
 
 .mys-languages-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .mys-language {
@@ -669,15 +706,23 @@ ${filename}`),
 .mys-language-grip svg { width: 18px; height: 18px; fill: currentColor; }
 .mys-language-name { flex: 1; }
 .mys-language-remove { padding: 4px 10px; }
-.mys-languages-add { width: 100%; appearance: auto; }
-.mys-languages-add option { color: #000; }
+.mys-languages-add { align-self: flex-start; }
+.mys-languages-picker { margin-top: 8px; padding: 10px; border-radius: 12px; background: rgba(0, 0, 0, .3); }
+.mys-languages-picker[hidden] { display: none; }
+.mys-languages-search { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+.mys-languages-options { display: flex; flex-wrap: wrap; gap: 6px; max-height: 150px; overflow-y: auto; }
+.mys-languages-option { border: 0; border-radius: 14px; padding: 6px 12px; background: rgba(255, 255, 255, .1); color: inherit; font: inherit; cursor: pointer; }
+.mys-languages-option:hover { background: #7b5bf5; }
 .mys-languages-actions { margin-top: 20px; }
 `;
 
   // plugins/streams/view.ts
+  var SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">';
+  var LANGUAGES_ICON = `${SVG}<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M4.5 7.5h15M4.5 16.5h15"/></svg>`;
+  var SORT_BARS = '<path d="M3 7h9M3 12h7M3 17h5"/>';
   var ORDER_ICONS = {
-    "language-first": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M4.500 7.500h15M4.500 16.500h15"/></svg>',
-    "quality-first": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.500" y="5" width="19" height="14" rx="3"/><path d="M7 9v6M7 12h3.500M10.500 9v6M14 9v6h1.500a3 3 0 0 0 0-6H14Z"/></svg>'
+    "language-first": `${SVG}${SORT_BARS}<path d="M14.5 5h6a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-1.5 1.5H18l-2.5 2.5V12h-1A1.5 1.5 0 0 1 13 10.5v-4A1.5 1.5 0 0 1 14.5 5Z"/></svg>`,
+    "quality-first": `${SVG}${SORT_BARS}<rect x="12.5" y="5" width="10" height="8" rx="1.5"/><path d="M15 7.5v3M15 9h1.7M16.700 7.500v3M18.700 7.500v3h.6a1.500 1.500 0 0 0 0-3h-.6Z" stroke-width="1.200"/></svg>`
   };
   var ORDER_HINTS = {
     "language-first": "Sorted by language first: only your best available language, best quality on top. Click to sort by quality first.",
@@ -728,19 +773,20 @@ ${filename}`),
     const shown = `Showing ${languageName(audio[selection.language])}`;
     return selection.language === 0 || loading > 0 ? shown : `${shown}. No ${languageName(audio[0])} found.`;
   };
+  var LANGUAGES_HINT = "Audio and subtitle languages for this title";
   var languagesButton = (custom, onClick) => {
-    const button = el2("button", "mys-button", custom ? "Languages (this title)" : "Languages");
-    button.dataset.mysLanguages = "";
-    button.title = "Choose the audio and subtitle languages for this title";
+    const button = el2("button", "mys-button mys-streams-icon-button");
+    button.innerHTML = LANGUAGES_ICON;
+    button.dataset.mysLanguages = custom ? "custom" : "default";
+    button.title = custom ? `${LANGUAGES_HINT} (this title has its own)` : LANGUAGES_HINT;
+    button.setAttribute("aria-label", button.title);
     button.addEventListener("click", onClick);
     return button;
   };
   var render = (container, model, actions) => {
     const toolbar = el2("div", "mys-streams-toolbar");
-    if (model.languagesButton !== "none") {
-      toolbar.append(languagesButton(model.languagesButton === "custom", actions.onEditLanguages));
-    }
-    const order = el2("button", "mys-button mys-streams-order");
+    toolbar.append(languagesButton(model.customLanguages, actions.onEditLanguages));
+    const order = el2("button", "mys-button mys-streams-icon-button");
     order.innerHTML = ORDER_ICONS[model.order];
     order.dataset.mysOrder = model.order;
     order.title = ORDER_HINTS[model.order];
@@ -823,27 +869,23 @@ ${filename}`),
       return id ? { id, name: state.metaItem?.content?.content?.name ?? "this title" } : null;
     };
     api.ui.settingsEntry("Stream languages", () => openLanguages(null));
-    api.slots.add("videos.search", {
-      placement: "before",
-      mount: (slot) => {
-        slot.className = "mys-streams-episodes";
-        let disposed = false;
-        const draw = async () => {
-          const title = await currentTitle();
-          if (disposed || !title) return;
-          slot.replaceChildren(languagesButton(isCustom(title.id), () => openLanguages(title)));
-        };
-        const stopState = api.core.on("state", (models) => {
-          if (models.includes("meta_details")) draw();
-        });
-        const stopStorage = api.storage.onChange(draw);
-        draw();
-        return () => {
-          disposed = true;
-          stopState();
-          stopStorage();
-        };
-      }
+    api.anchors.watch("meta.actions", (actions) => {
+      const sibling = [...actions.querySelectorAll('[class*="action-button-container-"]')].filter((button2) => !/(^| )wide-/.test(button2.className)).pop();
+      if (!sibling) return;
+      const button = document.createElement("div");
+      button.className = sibling.className;
+      button.tabIndex = 0;
+      button.title = LANGUAGES_HINT;
+      button.dataset.mysTitleLanguages = "";
+      button.innerHTML = LANGUAGES_ICON;
+      const size2 = sibling.querySelector("svg")?.getBoundingClientRect().width || 28;
+      button.querySelector("svg").setAttribute("style", `width: ${size2}px; height: ${size2}px; fill: none; stroke: var(--primary-foreground-color, #fff); opacity: .9`);
+      button.addEventListener("click", async () => {
+        const title = await currentTitle();
+        if (title) openLanguages(title);
+      });
+      actions.append(button);
+      return () => button.remove();
     });
     api.anchors.watch("streams.toolbar", (toolbar) => {
       toolbar.dataset.mysStreamsToolbar = "";
@@ -883,7 +925,6 @@ ${filename}`),
         const selection = selectStreams(rows.map((entry) => ({ stream: entry, languages: entry.languages, quality: entry.info.quality })), audio, original, order);
         const loading = state.streams.filter((group) => group.content.type === "Loading").length;
         const title = { id: meta.id, name: state.metaItem?.content?.content?.name ?? "this title" };
-        const hasEpisodeList = video !== meta.id;
         render(container, {
           loading,
           audio,
@@ -891,7 +932,7 @@ ${filename}`),
           selection,
           addons,
           addon: addons.includes(addon ?? "") ? addon : null,
-          languagesButton: hasEpisodeList ? "none" : isCustom(meta.id) ? "custom" : "default"
+          customLanguages: isCustom(meta.id)
         }, {
           onEditLanguages: () => openLanguages(title),
           onToggleOrder: () => {
@@ -933,11 +974,11 @@ ${filename}`),
     manifest: {
       id: "streams",
       name: "Stream languages",
-      version: "1.1.0",
+      version: "1.2.0",
       apiVersion: 0,
       description: "Shows streams in your languages first, grouped by quality, with audio and subtitle languages per title.",
       entry: "index.js",
-      anchors: ["streams.list", "streams.toolbar", "videos.search"]
+      anchors: ["streams.list", "streams.toolbar", "meta.actions"]
     },
     css: styles_default2,
     activate: activate2
@@ -1022,7 +1063,7 @@ ${filename}`),
     "addons.toolbar": '[class*="addons-container-"] [class*="selectable-inputs-container-"]',
     "streams.list": '[class*="streams-list-container-"] [class*="streams-container-"]',
     "streams.toolbar": '[class*="streams-list-container-"] [class*="select-choices-wrapper-"]',
-    "videos.search": '[class*="videos-list-container-"] > [class*="search-bar-container-"]',
+    "meta.actions": '[class*="metadetails-container-"] [class*="action-buttons-container-"]',
     "settings.menu": '[class*="settings-content-"] > [class*="menu-"]',
     "nav.vertical": '[class*="vertical-nav-bar-container-"]'
   };
