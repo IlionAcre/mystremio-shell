@@ -516,7 +516,7 @@ ${filename}`),
         return row2;
       }));
       if (codes.length === 0) {
-        rows.append(el("div", "mys-muted", kind === "audio" ? "No audio languages: every stream is shown." : "No subtitle languages."));
+        rows.append(el("div", "mys-muted", kind === "audio" ? "No audio languages: the original language of each title is used." : "No subtitle languages: subtitles are left alone."));
       }
       picker.hidden = true;
     };
@@ -596,6 +596,62 @@ ${filename}`),
     panel.append(actions);
     return panel;
   };
+
+  // plugins/streams/requery.ts
+  var pairs = {
+    read: (segment) => {
+      const decoded = decodeURIComponent(segment);
+      if (!decoded.includes("=")) return null;
+      return Object.fromEntries(decoded.split("|").map((pair) => {
+        const at = pair.indexOf("=");
+        return [pair.slice(0, at), pair.slice(at + 1)];
+      }));
+    },
+    write: (config) => encodeURIComponent(Object.entries(config).map(([key, value]) => `${key}=${value}`).join("|")).replace(/%3D/g, "=").replace(/%2C/g, ",").replace(/%7C/g, "|"),
+    languages: (config) => typeof config.language === "string" && config.language !== "" ? config.language.split(",") : [],
+    withLanguage: (config, key) => ({ ...config, language: key })
+  };
+  var json = {
+    read: (segment) => {
+      try {
+        const value = JSON.parse(atob(decodeURIComponent(segment)));
+        return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+      } catch {
+        return null;
+      }
+    },
+    write: (config) => encodeURIComponent(btoa(JSON.stringify(config))),
+    languages: (config) => Array.isArray(config.language) ? config.language.filter((entry) => typeof entry === "string") : [],
+    withLanguage: (config, key) => ({ ...config, language: [key] })
+  };
+  var FORMATS = {
+    "torrentio.strem.fun": pairs,
+    "torrentsdb.com": json
+  };
+  var KEYS = {
+    "en": [],
+    "es-419": ["latino"],
+    "es-ES": ["spanish"],
+    "es": ["latino", "spanish"]
+  };
+  var keysOf = (code) => KEYS[code] ?? LANGUAGES.find((language2) => language2.code === code)?.labels ?? [];
+  var queryKeys = (audio, original) => [...new Set(audio.flatMap((code) => keysOf(code === ORIGINAL ? original : code)))];
+  var MANIFEST = "/manifest.json";
+  var languageVariant = (transportUrl, key) => {
+    const url = new URL(transportUrl);
+    const format = FORMATS[url.host];
+    if (!format || !url.pathname.endsWith(MANIFEST)) return null;
+    const segments = url.pathname.slice(1, -MANIFEST.length).split("/");
+    const segment = segments.pop();
+    if (segment === void 0 || segment === "") return null;
+    const config = format.read(segment);
+    if (config === null) return null;
+    const current2 = format.languages(config);
+    if (current2.length === 1 && current2[0] === key) return null;
+    const path = [...segments, format.write(format.withLanguage(config, key))].join("/");
+    return `${url.origin}/${path}${MANIFEST}`;
+  };
+  var streamRequestUrl = (transportUrl, type, videoId) => `${transportUrl.slice(0, -MANIFEST.length)}/stream/${encodeURIComponent(type)}/${encodeURIComponent(videoId)}.json`;
 
   // plugins/streams/rules.ts
   var DEFAULT_PREFERENCE = {
@@ -805,6 +861,11 @@ ${filename}`),
     if (model.loading > 0) {
       status.append(el2("span", "mys-muted", `  ${model.loading} addon${model.loading === 1 ? "" : "s"} still loading`));
     }
+    if (model.asking !== null) {
+      const asking = el2("span", "mys-muted", `  Asking addons for more in ${model.asking}\u2026`);
+      asking.dataset.mysAsking = "";
+      status.append(asking);
+    }
     const list = el2("div", "mys-streams-list");
     list.append(...sections2(model.selection.shown));
     if (model.selection.others.length > 0) {
@@ -816,10 +877,56 @@ ${filename}`),
   };
 
   // plugins/streams/index.ts
+  var identityOf = (stream) => {
+    if (typeof stream.url === "string") return stream.url;
+    return typeof stream.infoHash === "string" ? `${stream.infoHash}:${stream.fileIdx ?? ""}` : null;
+  };
+  var capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
   var CINEMETA = "https://v3-cinemeta.strem.io/meta";
   var activate2 = (api) => {
     const originals = /* @__PURE__ */ new Map();
     const toasted = /* @__PURE__ */ new Set();
+    const extras = /* @__PURE__ */ new Map();
+    const asking = /* @__PURE__ */ new Map();
+    const redraws = /* @__PURE__ */ new Set();
+    const redraw = () => redraws.forEach((draw) => draw());
+    const askByLanguage = (type, video, addons, keys) => {
+      const id = `${video}|${keys.join(",")}`;
+      if (extras.has(id)) return id;
+      const found = [];
+      const seen = /* @__PURE__ */ new Set();
+      extras.set(id, found);
+      (async () => {
+        for (const key of keys) {
+          const requests = addons.flatMap(({ name, transportUrl }) => {
+            const variant = languageVariant(transportUrl, key);
+            return variant === null ? [] : [{ name, transportUrl, request: streamRequestUrl(variant, type, video) }];
+          });
+          if (requests.length === 0) continue;
+          asking.set(id, key);
+          redraw();
+          await Promise.all(requests.map(async ({ name, transportUrl, request: request2 }) => {
+            try {
+              const { streams: streams2 = [] } = await (await fetch(request2)).json();
+              for (const stream of streams2) {
+                const identity = identityOf(stream);
+                if (identity === null || seen.has(identity)) continue;
+                const info = describeStream({ name: stream.name, description: stream.description ?? stream.title, behaviorHints: stream.behaviorHints });
+                if (info.subtitledOnly || !info.stated.some((code) => keysOf(code).includes(key))) continue;
+                seen.add(identity);
+                found.push({ addon: name, transportUrl, identity, stream, encoded: await api.core.encodeStream(stream) });
+              }
+            } catch {
+              console.warn(`[mystremio] ${name} did not answer the ${key} request`);
+            }
+          }));
+          redraw();
+        }
+        asking.delete(id);
+        redraw();
+      })();
+      return id;
+    };
     const originalLanguage = (type, id) => {
       const known = originals.get(id);
       if (known) return known;
@@ -920,7 +1027,18 @@ ${filename}`),
           const info = describeStream(stream);
           return { stream, addon: group.addon.manifest.name, info, languages: audioLanguages(info, original) };
         }));
-        const { audio } = preferenceFor(meta.id);
+        const chosen = preferenceFor(meta.id).audio;
+        const audio = chosen.length > 0 ? chosen : [ORIGINAL];
+        const search = askByLanguage(meta.type, video, state.streams.map((group) => ({ name: group.addon.manifest.name, transportUrl: group.addon.transportUrl })), queryKeys(audio, original));
+        const known = new Set(ready.flatMap((group) => (group.content.type === "Ready" ? group.content.content : []).map((stream) => identityOf(stream))));
+        const template = ready.flatMap((group) => group.content.type === "Ready" ? group.content.content : []).find((stream) => stream.deepLinks?.player)?.deepLinks?.player?.split("/");
+        const metaTransport = template?.[4] ?? encodeURIComponent(state.metaItem?.addon?.transportUrl ?? "");
+        (extras.get(search) ?? []).filter((extra) => !known.has(extra.identity) && (addon === null || extra.addon === addon)).forEach(({ addon: name, transportUrl, stream, encoded }) => {
+          const player = `#/player/${encodeURIComponent(encoded)}/${encodeURIComponent(transportUrl)}/${metaTransport}/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}/${encodeURIComponent(video)}`;
+          const shaped = { name: stream.name, description: stream.description ?? stream.title, behaviorHints: stream.behaviorHints, deepLinks: { player } };
+          const info = describeStream(shaped);
+          rows.push({ stream: shaped, addon: name, info, languages: audioLanguages(info, original) });
+        });
         const order = orderOverride ?? defaultOrder();
         const selection = selectStreams(rows.map((entry) => ({ stream: entry, languages: entry.languages, quality: entry.info.quality })), audio, original, order);
         const loading = state.streams.filter((group) => group.content.type === "Loading").length;
@@ -932,7 +1050,8 @@ ${filename}`),
           selection,
           addons,
           addon: addons.includes(addon ?? "") ? addon : null,
-          customLanguages: isCustom(meta.id)
+          customLanguages: isCustom(meta.id),
+          asking: asking.has(search) ? capitalize(asking.get(search)) : null
         }, {
           onEditLanguages: () => openLanguages(title),
           onToggleOrder: () => {
@@ -944,7 +1063,7 @@ ${filename}`),
             draw();
           }
         });
-        if (loading === 0 && rows.length > 0 && addon === null && order === "language-first" && audio.length > 0 && !toasted.has(video)) {
+        if (loading === 0 && !asking.has(search) && rows.length > 0 && addon === null && order === "language-first" && !toasted.has(video)) {
           toasted.add(video);
           if (selection.language === null) {
             api.ui.toast({ title: "None of your languages were found. Showing every stream." });
@@ -960,9 +1079,11 @@ ${filename}`),
         toasted.delete(current2);
         draw();
       });
+      redraws.add(draw);
       draw();
       return () => {
         disposed = true;
+        redraws.delete(draw);
         stopState();
         stopStorage();
         container.remove();
@@ -974,7 +1095,7 @@ ${filename}`),
     manifest: {
       id: "streams",
       name: "Stream languages",
-      version: "1.2.0",
+      version: "1.3.0",
       apiVersion: 0,
       description: "Shows streams in your languages first, grouped by quality, with audio and subtitle languages per title.",
       entry: "index.js",
@@ -1525,6 +1646,7 @@ ${filename}`),
       core: {
         dispatch: (action, model) => core2.dispatch(action, model),
         getState: (model) => core2.getState(model),
+        encodeStream: (stream) => core2.encodeStream(stream),
         on: (type, listener) => track(onCore(type, listener))
       },
       anchors: {
