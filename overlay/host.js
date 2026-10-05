@@ -459,33 +459,6 @@ ${filename}`),
     return info.multi && !info.stated.includes(original) ? [...info.stated, original] : info.stated;
   };
 
-  // plugins/streams/rules.ts
-  var DEFAULT_RULES = [
-    { audio: "es-419", subtitles: null },
-    { audio: "es", subtitles: null },
-    { audio: "en", subtitles: "es" }
-  ];
-  var ruleLabel = ({ audio, subtitles }) => subtitles === null ? languageName(audio) : `${languageName(audio)} + ${languageName(subtitles)} subtitles`;
-  var rank = (languages, rules, original) => rules.findIndex(({ audio }) => languages.some((language2) => accepts(audio === ORIGINAL ? original : audio, language2)));
-  var sections = (candidates) => QUALITIES.map((quality2) => ({
-    quality: quality2,
-    streams: candidates.filter(({ candidate }) => candidate.quality === quality2).sort((a, b) => a.rank - b.rank).map(({ candidate }) => candidate.stream)
-  })).filter(({ streams: streams2 }) => streams2.length > 0);
-  var selectStreams = (candidates, rules, original, order) => {
-    const ranked = candidates.map((candidate) => ({ candidate, rank: rank(candidate.languages, rules, original) }));
-    const matching = ranked.filter((entry) => entry.rank !== -1);
-    if (matching.length === 0) {
-      return { rule: null, shown: sections(ranked), others: [] };
-    }
-    const best = Math.min(...matching.map((entry) => entry.rank));
-    const isShown = (entry) => order === "language-first" ? entry.rank === best : entry.rank !== -1;
-    return {
-      rule: best,
-      shown: sections(ranked.filter(isShown)),
-      others: sections(ranked.filter((entry) => !isShown(entry)).map((entry) => ({ ...entry, rank: entry.rank === -1 ? rules.length : entry.rank })))
-    };
-  };
-
   // plugins/streams/editor.ts
   var el = (tag, className = "", text = "") => {
     const element = document.createElement(tag);
@@ -493,109 +466,133 @@ ${filename}`),
     element.textContent = text;
     return element;
   };
-  var languageSelect = (value, withNone, onChange) => {
-    const select = el("select", "mys-input mys-streams-select");
-    const options = [
-      ...withNone ? [["", "No subtitles"]] : [],
-      [ORIGINAL, languageName(ORIGINAL)],
-      ...LANGUAGES.map(({ code, name }) => [code, name])
-    ];
-    options.forEach(([code, name]) => select.append(new Option(name, code, false, code === (value ?? ""))));
-    select.addEventListener("change", () => onChange(select.value === "" ? null : select.value));
-    return select;
-  };
-  var rulesEditor = (initial, onChange) => {
-    let rules = initial.map((rule) => ({ ...rule }));
-    const list = el("div", "mys-streams-rules");
+  var GRIP = '<svg viewBox="0 0 24 24"><path d="M9 5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9-14a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>';
+  var languageList = (kind, initial, onChange) => {
+    let codes = [...initial];
+    const section = el("div", "mys-languages-section");
+    section.dataset.mysLanguageList = kind;
+    const rows = el("div", "mys-languages-rows");
+    const add = el("select", "mys-input mys-languages-add");
     const commit = (next) => {
-      rules = next;
-      onChange(rules.map((rule) => ({ ...rule })));
+      codes = next;
+      onChange([...codes]);
       render2();
     };
-    const move2 = (index, offset) => {
-      const next = [...rules];
-      const [rule] = next.splice(index, 1);
-      next.splice(index + offset, 0, rule);
-      commit(next);
+    const startDrag = (row2, down) => {
+      if (down.button !== 0 || down.target.closest("button")) return;
+      down.preventDefault();
+      row2.dataset.dragging = "";
+      const onMove = (event) => {
+        const over = [...rows.querySelectorAll(".mys-language")].find((other) => {
+          const { top: top2, bottom } = other.getBoundingClientRect();
+          return other !== row2 && event.clientY >= top2 && event.clientY <= bottom;
+        });
+        if (!over) return;
+        const { top, height } = over.getBoundingClientRect();
+        over.insertAdjacentElement(event.clientY < top + height / 2 ? "beforebegin" : "afterend", row2);
+      };
+      const onUp = () => {
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+        commit([...rows.querySelectorAll(".mys-language")].map((child) => child.dataset.language));
+      };
+      document.addEventListener("pointermove", onMove);
+      document.addEventListener("pointerup", onUp);
     };
     const render2 = () => {
-      list.replaceChildren(...rules.map((rule, index) => {
-        const row2 = el("div", "mys-row mys-streams-rule");
-        row2.dataset.rule = String(index);
-        const up = el("button", "mys-button mys-streams-icon", "\u2191");
-        const down = el("button", "mys-button mys-streams-icon", "\u2193");
-        const remove = el("button", "mys-button mys-streams-icon", "\u2715");
-        up.title = "Move up";
-        down.title = "Move down";
-        remove.title = "Remove";
-        up.disabled = index === 0;
-        down.disabled = index === rules.length - 1;
-        remove.disabled = rules.length === 1;
-        up.addEventListener("click", () => move2(index, -1));
-        down.addEventListener("click", () => move2(index, 1));
-        remove.addEventListener("click", () => commit(rules.filter((_, other) => other !== index)));
-        row2.append(
-          el("span", "mys-streams-rank", `${index + 1}.`),
-          el("span", "mys-muted", "Audio"),
-          languageSelect(rule.audio, false, (audio) => commit(rules.map((other, at) => at === index ? { ...other, audio } : other))),
-          el("span", "mys-muted", "Subtitles"),
-          languageSelect(rule.subtitles, true, (subtitles) => commit(rules.map((other, at) => at === index ? { ...other, subtitles } : other))),
-          up,
-          down,
-          remove
-        );
+      rows.replaceChildren(...codes.map((code) => {
+        const row2 = el("div", "mys-language");
+        row2.dataset.language = code;
+        const grip = el("span", "mys-language-grip");
+        grip.innerHTML = GRIP;
+        const remove = el("button", "mys-button mys-language-remove", "\u2715");
+        remove.title = `Remove ${languageName(code)}`;
+        remove.addEventListener("click", () => commit(codes.filter((other) => other !== code)));
+        row2.addEventListener("pointerdown", (event) => startDrag(row2, event));
+        row2.append(grip, el("span", "mys-language-name", languageName(code)), remove);
         return row2;
       }));
-      const add = el("button", "mys-button", "Add a language");
-      add.dataset.mysAddRule = "";
-      add.addEventListener("click", () => commit([...rules, { audio: "en", subtitles: null }]));
-      list.append(add);
+      if (codes.length === 0) {
+        rows.append(el("div", "mys-muted", kind === "audio" ? "No audio languages: every stream is shown." : "No subtitle languages."));
+      }
+      const available = [...kind === "audio" ? [ORIGINAL] : [], ...LANGUAGES.map(({ code }) => code)].filter((code) => !codes.includes(code));
+      add.replaceChildren(new Option("Add a language\u2026", ""), ...available.map((code) => new Option(languageName(code), code)));
+      add.value = "";
     };
+    add.addEventListener("change", () => {
+      if (add.value !== "") commit([...codes, add.value]);
+    });
+    section.append(el("h3", "", kind === "audio" ? "Audio" : "Subtitles"), rows, add);
     render2();
-    return list;
+    return section;
   };
   var languagePanel = (options) => {
+    let draft = { audio: [...options.preference.audio], subtitles: [...options.preference.subtitles] };
+    const forTitle = options.titleName !== null;
     const panel = el("div", "mys-panel");
-    panel.style.width = "680px";
-    panel.dataset.mysStreamsPanel = "";
-    panel.append(el("h2", "", "Stream languages"));
-    panel.append(el("div", "mys-muted", "Streams are chosen by the first line that has results. Releases that do not state a language count as the original language of the title."));
-    if (options.titleName !== null) {
-      const section = el("div");
-      section.dataset.mysTitleRules = "";
-      const render2 = (rules) => {
-        section.replaceChildren(el("h3", "", `For ${options.titleName}`));
-        if (rules === null) {
-          const customise = el("button", "mys-button", "Set languages for this title");
-          customise.addEventListener("click", () => {
-            options.onTitleRules(options.defaultRules);
-            render2(options.defaultRules);
-          });
-          section.append(el("div", "mys-muted", `Uses the default: ${options.defaultRules.map(ruleLabel).join(", then ")}.`), customise);
-          return;
-        }
-        const reset = el("button", "mys-button", "Use the default instead");
-        reset.addEventListener("click", () => {
-          options.onTitleRules(null);
-          render2(null);
-        });
-        section.append(rulesEditor(rules, options.onTitleRules), reset);
-      };
-      render2(options.titleRules);
-      panel.append(section);
+    panel.style.width = "560px";
+    panel.dataset.mysStreamsPanel = forTitle ? "title" : "default";
+    panel.append(
+      el("h2", "", forTitle ? `Languages for ${options.titleName}` : "Stream languages"),
+      el("div", "mys-muted", forTitle ? options.isCustom ? "This title has its own languages." : "This title uses your default languages. Changes saved here apply to this title only." : "Used for every title that does not have its own languages."),
+      languageList("audio", draft.audio, (audio) => {
+        draft = { ...draft, audio };
+      }),
+      el("div", "mys-muted", "Streams in the first audio language that is available come first. Releases that do not state a language count as the original language of the title."),
+      languageList("subtitles", draft.subtitles, (subtitles) => {
+        draft = { ...draft, subtitles };
+      }),
+      el("div", "mys-muted", "Used when the audio is not in one of these languages.")
+    );
+    if (!forTitle) {
+      const order = el("label", "mys-row mys-languages-order");
+      const quality2 = el("input", "mys-switch");
+      quality2.type = "checkbox";
+      quality2.checked = options.defaultOrder === "quality-first";
+      quality2.addEventListener("change", () => options.onDefaultOrder(quality2.checked ? "quality-first" : "language-first"));
+      order.append(quality2, el("span", "", "Sort by quality before language"));
+      panel.append(el("h3", "", "Order"), order);
     }
-    const defaults2 = el("div");
-    defaults2.dataset.mysDefaultRules = "";
-    defaults2.append(el("h3", "", "Default for all titles"), rulesEditor(options.defaultRules, options.onDefaultRules));
-    panel.append(defaults2);
-    const order = el("label", "mys-row");
-    const quality2 = el("input", "mys-switch");
-    quality2.type = "checkbox";
-    quality2.checked = options.defaultOrder === "quality-first";
-    quality2.addEventListener("change", () => options.onDefaultOrder(quality2.checked ? "quality-first" : "language-first"));
-    order.append(quality2, el("span", "", "Put quality before language by default"));
-    panel.append(el("h3", "", "Order"), order, el("div", "mys-muted", "Off: only your best available language is shown, best quality first. On: every language in your list is shown, grouped by quality."));
+    const actions = el("div", "mys-row mys-languages-actions");
+    const save = el("button", "mys-button", forTitle ? "Save for this title" : "Save");
+    save.dataset.primary = "";
+    save.dataset.mysSave = "";
+    save.addEventListener("click", () => options.onSave(draft));
+    actions.append(el("div", "mys-spacer"));
+    if (forTitle && options.isCustom) {
+      const reset = el("button", "mys-button", "Use default languages");
+      reset.dataset.mysReset = "";
+      reset.addEventListener("click", options.onReset);
+      actions.append(reset);
+    }
+    actions.append(save);
+    panel.append(actions);
     return panel;
+  };
+
+  // plugins/streams/rules.ts
+  var DEFAULT_PREFERENCE = {
+    audio: ["es-419", "es", "en"],
+    subtitles: ["es"]
+  };
+  var rank = (languages, wanted, original) => wanted.findIndex((code) => languages.some((language2) => accepts(code === ORIGINAL ? original : code, language2)));
+  var sections = (candidates) => QUALITIES.map((quality2) => ({
+    quality: quality2,
+    streams: candidates.filter(({ candidate }) => candidate.quality === quality2).sort((a, b) => a.rank - b.rank).map(({ candidate }) => candidate.stream)
+  })).filter(({ streams: streams2 }) => streams2.length > 0);
+  var selectStreams = (candidates, wanted, original, order) => {
+    const ranked = candidates.map((candidate) => ({ candidate, rank: rank(candidate.languages, wanted, original) }));
+    const matching = ranked.filter((entry) => entry.rank !== -1);
+    if (matching.length === 0) {
+      return { language: null, shown: sections(ranked), others: [] };
+    }
+    const best = Math.min(...matching.map((entry) => entry.rank));
+    const isShown = (entry) => order === "language-first" ? entry.rank === best : entry.rank !== -1;
+    return {
+      language: best,
+      shown: sections(ranked.filter(isShown)),
+      others: sections(ranked.filter((entry) => !isShown(entry)).map((entry) => ({ ...entry, rank: entry.rank === -1 ? wanted.length : entry.rank })))
+    };
   };
 
   // plugins/streams/styles.css
@@ -633,8 +630,6 @@ ${filename}`),
     letter-spacing: .06em;
     opacity: .7;
 }
-.mys-streams-more { display: block; margin: 16px auto 0; }
-
 .mys-stream {
     display: flex;
     gap: 14px;
@@ -653,14 +648,41 @@ ${filename}`),
 .mys-stream-facts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 12px; opacity: .85; }
 .mys-stream-language { padding: 1px 8px; border-radius: 9px; background: rgba(123, 91, 245, .45); }
 
-.mys-streams-rules { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
-.mys-streams-rule { gap: 8px; }
-.mys-streams-rank { width: 18px; opacity: .7; }
-.mys-streams-icon { padding: 6px 11px; }
-.mys-streams-icon:disabled { opacity: .3; cursor: default; }
+.mys-streams-order { padding: 7px 10px; display: flex; align-items: center; }
+.mys-streams-order svg { width: 22px; height: 22px; display: block; }
+.mys-streams-episodes { padding: 0 16px 10px; }
+
+.mys-languages-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.mys-language {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 6px 6px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .07);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+}
+.mys-language[data-dragging] { background: rgba(123, 91, 245, .45); cursor: grabbing; }
+.mys-language-grip { display: flex; opacity: .6; }
+.mys-language-grip svg { width: 18px; height: 18px; fill: currentColor; }
+.mys-language-name { flex: 1; }
+.mys-language-remove { padding: 4px 10px; }
+.mys-languages-add { width: 100%; appearance: auto; }
+.mys-languages-add option { color: #000; }
+.mys-languages-actions { margin-top: 20px; }
 `;
 
   // plugins/streams/view.ts
+  var ORDER_ICONS = {
+    "language-first": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M4.500 7.500h15M4.500 16.500h15"/></svg>',
+    "quality-first": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.500" y="5" width="19" height="14" rx="3"/><path d="M7 9v6M7 12h3.500M10.500 9v6M14 9v6h1.500a3 3 0 0 0 0-6H14Z"/></svg>'
+  };
+  var ORDER_HINTS = {
+    "language-first": "Sorted by language first: only your best available language, best quality on top. Click to sort by quality first.",
+    "quality-first": "Sorted by quality first: all your languages, grouped by quality. Click to sort by language first."
+  };
   var el2 = (tag, className = "", text = "") => {
     const element = document.createElement(tag);
     element.className = className;
@@ -680,7 +702,9 @@ ${filename}`),
     const body = el2("div", "mys-stream-body");
     const facts = el2("div", "mys-stream-facts");
     languages.forEach((code) => facts.append(el2("span", "mys-stream-language", languageName(code))));
-    if (info.stated.length === 0) facts.lastElementChild?.setAttribute("title", "Assumed: the release does not state a language");
+    if (info.stated.length === 0 || info.subtitledOnly) {
+      facts.lastElementChild?.setAttribute("title", "Assumed: the release does not state its audio language");
+    }
     if (info.sizeBytes !== null) facts.append(el2("span", "", formatSize(info.sizeBytes)));
     if (info.seeders !== null) facts.append(el2("span", "", `${info.seeders} seeders`));
     facts.append(el2("span", "mys-muted", addon));
@@ -694,27 +718,35 @@ ${filename}`),
     heading.dataset.quality = quality2;
     return [heading, ...streams2.map(row)];
   });
-  var count = (parts) => parts.reduce((total, { streams: streams2 }) => total + streams2.length, 0);
-  var summary = ({ rules, selection, order, loading }) => {
-    if (selection.rule === null) {
+  var summary = ({ audio, selection, order, loading }) => {
+    if (selection.language === null) {
       return loading > 0 ? "Looking for streams\u2026" : "None of your languages were found. Showing everything.";
     }
     if (order === "quality-first") {
-      return `Showing ${rules.map(ruleLabel).join(", ")}`;
+      return `Showing ${audio.map(languageName).join(", ")}`;
     }
-    const shown = `Showing ${ruleLabel(rules[selection.rule])}`;
-    return selection.rule === 0 || loading > 0 ? shown : `${shown}. No ${ruleLabel(rules[0])} found.`;
+    const shown = `Showing ${languageName(audio[selection.language])}`;
+    return selection.language === 0 || loading > 0 ? shown : `${shown}. No ${languageName(audio[0])} found.`;
+  };
+  var languagesButton = (custom, onClick) => {
+    const button = el2("button", "mys-button", custom ? "Languages (this title)" : "Languages");
+    button.dataset.mysLanguages = "";
+    button.title = "Choose the audio and subtitle languages for this title";
+    button.addEventListener("click", onClick);
+    return button;
   };
   var render = (container, model, actions) => {
     const toolbar = el2("div", "mys-streams-toolbar");
-    const languages = el2("button", "mys-button", model.usesTitleRules ? "Languages (this title)" : "Languages");
-    languages.dataset.mysLanguages = "";
-    languages.addEventListener("click", actions.onEditLanguages);
-    const order = el2("button", "mys-button", model.order === "language-first" ? "Language first" : "Quality first");
+    if (model.languagesButton !== "none") {
+      toolbar.append(languagesButton(model.languagesButton === "custom", actions.onEditLanguages));
+    }
+    const order = el2("button", "mys-button mys-streams-order");
+    order.innerHTML = ORDER_ICONS[model.order];
     order.dataset.mysOrder = model.order;
-    order.title = "Switch between best language first and best quality first";
+    order.title = ORDER_HINTS[model.order];
+    order.setAttribute("aria-label", ORDER_HINTS[model.order]);
     order.addEventListener("click", actions.onToggleOrder);
-    toolbar.append(languages, order);
+    toolbar.append(order);
     if (model.addons.length > 1) {
       const addon = el2("select", "mys-input mys-streams-select");
       addon.append(new Option("All addons", "", false, model.addon === null));
@@ -729,13 +761,7 @@ ${filename}`),
     }
     const list = el2("div", "mys-streams-list");
     list.append(...sections2(model.selection.shown));
-    const hidden = count(model.selection.others);
-    if (hidden > 0 && !model.showOthers) {
-      const more = el2("button", "mys-button mys-streams-more", `Show other languages (${hidden})`);
-      more.dataset.mysShowOthers = "";
-      more.addEventListener("click", actions.onShowOthers);
-      list.append(more);
-    } else if (hidden > 0) {
+    if (model.selection.others.length > 0) {
       const divider = el2("div", "mys-streams-divider", "Other languages");
       divider.dataset.mysOthers = "";
       list.append(divider, ...sections2(model.selection.others));
@@ -755,30 +781,70 @@ ${filename}`),
       originals.set(id, lookup);
       return lookup;
     };
-    const defaultRules = () => api.storage.get("rules", DEFAULT_RULES);
-    const titleRules = (id) => api.storage.get("titleRules", {})[id] ?? null;
+    const titlePreferences = () => api.storage.get("titlePreferences", {});
+    const defaultPreference = () => api.storage.get("preference", DEFAULT_PREFERENCE);
+    const preferenceFor = (id) => titlePreferences()[id] ?? defaultPreference();
+    const isCustom = (id) => id in titlePreferences();
     const defaultOrder = () => api.storage.get("order", "language-first");
-    const setTitleRules = (id, rules) => {
-      const all = { ...api.storage.get("titleRules", {}) };
-      if (rules === null) {
+    const setTitlePreference = (id, preference) => {
+      const all = { ...titlePreferences() };
+      if (preference === null) {
         delete all[id];
       } else {
-        all[id] = rules;
+        all[id] = preference;
       }
-      api.storage.set("titleRules", all);
+      api.storage.set("titlePreferences", all);
     };
     const openLanguages = (title) => {
-      api.ui.panel(languagePanel({
+      const close = api.ui.panel(languagePanel({
         titleName: title?.name ?? null,
-        titleRules: title ? titleRules(title.id) : null,
-        defaultRules: defaultRules(),
+        preference: title ? preferenceFor(title.id) : defaultPreference(),
+        isCustom: title !== null && isCustom(title.id),
         defaultOrder: defaultOrder(),
-        onTitleRules: (rules) => title && setTitleRules(title.id, rules),
-        onDefaultRules: (rules) => api.storage.set("rules", rules),
+        onSave: (preference) => {
+          if (title) {
+            setTitlePreference(title.id, preference);
+          } else {
+            api.storage.set("preference", preference);
+          }
+          api.ui.toast({ type: "success", title: title ? `Languages saved for ${title.name}` : "Default languages saved" });
+          close();
+        },
+        onReset: () => {
+          if (title) setTitlePreference(title.id, null);
+          close();
+        },
         onDefaultOrder: (order) => api.storage.set("order", order)
       }));
     };
+    const currentTitle = async () => {
+      const state = await api.core.getState("meta_details");
+      const id = state.selected?.metaPath?.id;
+      return id ? { id, name: state.metaItem?.content?.content?.name ?? "this title" } : null;
+    };
     api.ui.settingsEntry("Stream languages", () => openLanguages(null));
+    api.slots.add("videos.search", {
+      placement: "before",
+      mount: (slot) => {
+        slot.className = "mys-streams-episodes";
+        let disposed = false;
+        const draw = async () => {
+          const title = await currentTitle();
+          if (disposed || !title) return;
+          slot.replaceChildren(languagesButton(isCustom(title.id), () => openLanguages(title)));
+        };
+        const stopState = api.core.on("state", (models) => {
+          if (models.includes("meta_details")) draw();
+        });
+        const stopStorage = api.storage.onChange(draw);
+        draw();
+        return () => {
+          disposed = true;
+          stopState();
+          stopStorage();
+        };
+      }
+    });
     api.anchors.watch("streams.toolbar", (toolbar) => {
       toolbar.dataset.mysStreamsToolbar = "";
       return () => delete toolbar.dataset.mysStreamsToolbar;
@@ -790,7 +856,6 @@ ${filename}`),
       native.dataset.mysStreamsNative = "";
       native.insertAdjacentElement("afterend", container);
       let disposed = false;
-      let showOthers = false;
       let orderOverride = null;
       let addon = null;
       let current2 = "";
@@ -805,7 +870,6 @@ ${filename}`),
         const video = state.selected?.streamPath?.id ?? meta.id;
         if (video !== current2) {
           current2 = video;
-          showOthers = false;
           addon = null;
         }
         const ready = state.streams.filter((group) => group.content.type === "Ready");
@@ -814,28 +878,24 @@ ${filename}`),
           const info = describeStream(stream);
           return { stream, addon: group.addon.manifest.name, info, languages: audioLanguages(info, original) };
         }));
-        const rules = titleRules(meta.id) ?? defaultRules();
+        const { audio } = preferenceFor(meta.id);
         const order = orderOverride ?? defaultOrder();
-        const selection = selectStreams(rows.map((entry) => ({ stream: entry, languages: entry.languages, quality: entry.info.quality })), rules, original, order);
+        const selection = selectStreams(rows.map((entry) => ({ stream: entry, languages: entry.languages, quality: entry.info.quality })), audio, original, order);
         const loading = state.streams.filter((group) => group.content.type === "Loading").length;
-        const name = state.metaItem?.content?.content?.name ?? "this title";
+        const title = { id: meta.id, name: state.metaItem?.content?.content?.name ?? "this title" };
+        const hasEpisodeList = video !== meta.id;
         render(container, {
           loading,
-          rules,
-          usesTitleRules: titleRules(meta.id) !== null,
+          audio,
           order,
           selection,
-          showOthers,
           addons,
-          addon: addons.includes(addon ?? "") ? addon : null
+          addon: addons.includes(addon ?? "") ? addon : null,
+          languagesButton: hasEpisodeList ? "none" : isCustom(meta.id) ? "custom" : "default"
         }, {
-          onEditLanguages: () => openLanguages({ id: meta.id, name }),
+          onEditLanguages: () => openLanguages(title),
           onToggleOrder: () => {
             orderOverride = order === "language-first" ? "quality-first" : "language-first";
-            draw();
-          },
-          onShowOthers: () => {
-            showOthers = true;
             draw();
           },
           onAddon: (value) => {
@@ -843,19 +903,22 @@ ${filename}`),
             draw();
           }
         });
-        if (loading === 0 && rows.length > 0 && addon === null && order === "language-first" && !toasted.has(video)) {
+        if (loading === 0 && rows.length > 0 && addon === null && order === "language-first" && audio.length > 0 && !toasted.has(video)) {
           toasted.add(video);
-          if (selection.rule === null) {
+          if (selection.language === null) {
             api.ui.toast({ title: "None of your languages were found. Showing every stream." });
-          } else if (selection.rule > 0) {
-            api.ui.toast({ title: `No ${ruleLabel(rules[0])} audio found. Showing ${ruleLabel(rules[selection.rule])}.` });
+          } else if (selection.language > 0) {
+            api.ui.toast({ title: `No ${languageName(audio[0])} audio found. Showing ${languageName(audio[selection.language])}.` });
           }
         }
       };
       const stopState = api.core.on("state", (models) => {
         if (models.includes("meta_details")) draw();
       });
-      const stopStorage = api.storage.onChange(draw);
+      const stopStorage = api.storage.onChange(() => {
+        toasted.delete(current2);
+        draw();
+      });
       draw();
       return () => {
         disposed = true;
@@ -870,11 +933,11 @@ ${filename}`),
     manifest: {
       id: "streams",
       name: "Stream languages",
-      version: "1.0.0",
+      version: "1.1.0",
       apiVersion: 0,
-      description: "Shows streams in your languages first, grouped by quality, with a language list per title.",
+      description: "Shows streams in your languages first, grouped by quality, with audio and subtitle languages per title.",
       entry: "index.js",
-      anchors: ["streams.list", "streams.toolbar"]
+      anchors: ["streams.list", "streams.toolbar", "videos.search"]
     },
     css: styles_default2,
     activate: activate2
@@ -959,6 +1022,7 @@ ${filename}`),
     "addons.toolbar": '[class*="addons-container-"] [class*="selectable-inputs-container-"]',
     "streams.list": '[class*="streams-list-container-"] [class*="streams-container-"]',
     "streams.toolbar": '[class*="streams-list-container-"] [class*="select-choices-wrapper-"]',
+    "videos.search": '[class*="videos-list-container-"] > [class*="search-bar-container-"]',
     "settings.menu": '[class*="settings-content-"] > [class*="menu-"]',
     "nav.vertical": '[class*="vertical-nav-bar-container-"]'
   };
@@ -1359,11 +1423,11 @@ ${filename}`),
     if (eocd < 0) {
       throw new Error("Not a zip file");
     }
-    const count2 = view.getUint16(eocd + 10, true);
+    const count = view.getUint16(eocd + 10, true);
     let offset = view.getUint32(eocd + 16, true);
     const decoder2 = new TextDecoder();
     const files = /* @__PURE__ */ new Map();
-    for (let index = 0; index < count2; index += 1) {
+    for (let index = 0; index < count; index += 1) {
       if (view.getUint32(offset, true) !== CENTRAL_SIGNATURE) {
         throw new Error("Corrupt zip file");
       }
