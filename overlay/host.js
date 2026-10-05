@@ -354,6 +354,532 @@
     activate
   };
 
+  // plugins/streams/languages.ts
+  var language = (code, name, flags, labels, tags) => ({ code, name, flags, labels, tags });
+  var LANGUAGES = [
+    language("en", "English", ["\u{1F1EC}\u{1F1E7}", "\u{1F1FA}\u{1F1F8}"], ["english"], /\b(eng|english)\b/i),
+    language("es-419", "Spanish (Latino)", ["\u{1F1F2}\u{1F1FD}"], ["latino"], /\b(lat|latino|latam|dual-lat)\b|español latino/i),
+    language("es-ES", "Spanish (Spain)", ["\u{1F1EA}\u{1F1F8}"], ["castilian"], /\b(cast|castellano)\b|\besp\b(?![.\s-]*lat)/i),
+    language("es", "Spanish (any)", [], ["spanish"], /\b(spa|spanish)\b|español/i),
+    language("ja", "Japanese", ["\u{1F1EF}\u{1F1F5}"], ["japanese"], /\b(jap|jpn|japanese)\b/i),
+    language("ko", "Korean", ["\u{1F1F0}\u{1F1F7}"], ["korean"], /\b(kor|korean)\b/i),
+    language("zh", "Chinese", ["\u{1F1E8}\u{1F1F3}", "\u{1F1F9}\u{1F1FC}"], ["chinese", "taiwanese"], /\b(chi|chinese|mandarin|cantonese)\b|[一-鿿]{2}/i),
+    language("fr", "French", ["\u{1F1EB}\u{1F1F7}"], ["french"], /\b(fre|french|truefrench|vff|vf2?|vostfr)\b/i),
+    language("de", "German", ["\u{1F1E9}\u{1F1EA}"], ["german"], /\b(ger|german|deutsch)\b/i),
+    language("it", "Italian", ["\u{1F1EE}\u{1F1F9}"], ["italian"], /\b(ita|italian)\b/i),
+    language("pt", "Portuguese", ["\u{1F1F5}\u{1F1F9}", "\u{1F1E7}\u{1F1F7}"], ["portuguese"], /\b(portuguese|dublado|pt-br)\b/i),
+    language("ru", "Russian", ["\u{1F1F7}\u{1F1FA}"], ["russian"], /\b(rus|russian)\b|[Ѐ-ӿ]{3}/i),
+    language("uk", "Ukrainian", ["\u{1F1FA}\u{1F1E6}"], ["ukrainian"], /\b(ukr|ukrainian)\b/i),
+    language("hi", "Hindi", ["\u{1F1EE}\u{1F1F3}"], ["hindi", "tamil", "telugu"], /\b(hin|hindi|tamil|telugu)\b/i),
+    language("pl", "Polish", ["\u{1F1F5}\u{1F1F1}"], ["polish"], /\b(pol|polish|lektor)\b/i),
+    language("nl", "Dutch", ["\u{1F1F3}\u{1F1F1}"], ["dutch"], /\b(dutch)\b/i),
+    language("tr", "Turkish", ["\u{1F1F9}\u{1F1F7}"], ["turkish"], /\b(tur|turkish)\b/i),
+    language("ar", "Arabic", ["\u{1F1F8}\u{1F1E6}"], ["arabic"], /\b(ara|arabic)\b/i),
+    language("he", "Hebrew", ["\u{1F1EE}\u{1F1F1}"], ["hebrew"], /\b(heb|hebrew)\b/i),
+    language("cs", "Czech", ["\u{1F1E8}\u{1F1FF}"], ["czech"], /\b(cze|czech)\b/i)
+  ];
+  var ORIGINAL = "original";
+  var languageName = (code) => code === ORIGINAL ? "Original language" : LANGUAGES.find((entry) => entry.code === code)?.name ?? code;
+  var accepts = (wanted, actual) => actual === wanted || actual.startsWith(`${wanted}-`);
+  var COUNTRY_LANGUAGES = {
+    "japan": "ja",
+    "south korea": "ko",
+    "china": "zh",
+    "hong kong": "zh",
+    "taiwan": "zh",
+    "france": "fr",
+    "germany": "de",
+    "italy": "it",
+    "spain": "es-ES",
+    "mexico": "es-419",
+    "argentina": "es-419",
+    "colombia": "es-419",
+    "chile": "es-419",
+    "brazil": "pt",
+    "portugal": "pt",
+    "russia": "ru",
+    "india": "hi",
+    "turkey": "tr",
+    "poland": "pl",
+    "netherlands": "nl"
+  };
+  var languageOfCountry = (countries) => {
+    const first = countries?.split(",")[0]?.trim().toLowerCase() ?? "";
+    return COUNTRY_LANGUAGES[first] ?? "en";
+  };
+
+  // plugins/streams/detect.ts
+  var QUALITIES = ["4k", "1080p", "720p", "other"];
+  var QUALITY_LABELS = { "4k": "4K", "1080p": "1080p", "720p": "720p", "other": "Other" };
+  var UNITS = { kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3, tb: 1024 ** 4 };
+  var quality = (text) => {
+    if (/\b(2160p|4k|uhd)\b/i.test(text)) return "4k";
+    if (/\b1080[pi]\b/i.test(text)) return "1080p";
+    if (/\b720p\b/i.test(text)) return "720p";
+    return "other";
+  };
+  var size = (stream, description) => {
+    const hinted = stream.behaviorHints?.videoSize;
+    if (typeof hinted === "number" && hinted > 0) return hinted;
+    const match = /💾\s*([\d.]+)\s*(kb|mb|gb|tb)/i.exec(description);
+    return match ? Math.round(Number(match[1]) * UNITS[match[2].toLowerCase()]) : null;
+  };
+  var labelled = (description) => {
+    const spoken = /🗣️?\s*([^\n]*)/u.exec(description)?.[1]?.toLowerCase().split(",").map((part) => part.trim()) ?? [];
+    return LANGUAGES.filter(({ flags, labels }) => flags.some((flag) => description.includes(flag)) || labels.some((label) => spoken.includes(label))).map(({ code }) => code);
+  };
+  var tagged = (description, filename) => {
+    const text = [...description.split("\n").filter((line) => !/[👤💾⚙️🗣📂📺🔊📅]/u.test(line)), filename].join("\n");
+    return LANGUAGES.filter(({ tags }) => tags?.test(text)).map(({ code }) => code);
+  };
+  var MULTI_AUDIO = /\bdual\b|\bmulti\b(?![ ._-]*sub)/i;
+  var SUBTITLES = /multi(ple)?[ ._-]*sub|\bsub(s|bed|titulad[oa]s?|titled?)?[ ._-]+(en[ ._-]+)?(espa[nñ]ol|esp|spa|lat|eng|ita|fre)|\bvose?\b|\bvostfr\b/i;
+  var DUBBED = /\b(dub|dubbed|doblad[oa]|dual|audio)\b|\bmulti\b(?![ ._-]*sub)/i;
+  var describeStream = (stream) => {
+    const name = stream.name ?? "";
+    const description = stream.description ?? "";
+    const filename = stream.behaviorHints?.filename ?? "";
+    const everything = `${name}
+${description}
+${filename}`;
+    const stated = [.../* @__PURE__ */ new Set([...labelled(description), ...tagged(description, filename)])];
+    return {
+      stated,
+      multi: MULTI_AUDIO.test(everything),
+      subtitledOnly: SUBTITLES.test(everything) && !DUBBED.test(everything),
+      quality: quality(name) !== "other" ? quality(name) : quality(`${description}
+${filename}`),
+      sizeBytes: size(stream, description),
+      seeders: Number(/👤\s*(\d+)/u.exec(description)?.[1] ?? NaN) || null,
+      title: description.split("\n")[0]?.trim() || filename || name.replace(/\n/g, " ")
+    };
+  };
+  var audioLanguages = (info, original) => {
+    if (info.stated.length === 0 || info.subtitledOnly) return [original];
+    return info.multi && !info.stated.includes(original) ? [...info.stated, original] : info.stated;
+  };
+
+  // plugins/streams/rules.ts
+  var DEFAULT_RULES = [
+    { audio: "es-419", subtitles: null },
+    { audio: "es", subtitles: null },
+    { audio: "en", subtitles: "es" }
+  ];
+  var ruleLabel = ({ audio, subtitles }) => subtitles === null ? languageName(audio) : `${languageName(audio)} + ${languageName(subtitles)} subtitles`;
+  var rank = (languages, rules, original) => rules.findIndex(({ audio }) => languages.some((language2) => accepts(audio === ORIGINAL ? original : audio, language2)));
+  var sections = (candidates) => QUALITIES.map((quality2) => ({
+    quality: quality2,
+    streams: candidates.filter(({ candidate }) => candidate.quality === quality2).sort((a, b) => a.rank - b.rank).map(({ candidate }) => candidate.stream)
+  })).filter(({ streams: streams2 }) => streams2.length > 0);
+  var selectStreams = (candidates, rules, original, order) => {
+    const ranked = candidates.map((candidate) => ({ candidate, rank: rank(candidate.languages, rules, original) }));
+    const matching = ranked.filter((entry) => entry.rank !== -1);
+    if (matching.length === 0) {
+      return { rule: null, shown: sections(ranked), others: [] };
+    }
+    const best = Math.min(...matching.map((entry) => entry.rank));
+    const isShown = (entry) => order === "language-first" ? entry.rank === best : entry.rank !== -1;
+    return {
+      rule: best,
+      shown: sections(ranked.filter(isShown)),
+      others: sections(ranked.filter((entry) => !isShown(entry)).map((entry) => ({ ...entry, rank: entry.rank === -1 ? rules.length : entry.rank })))
+    };
+  };
+
+  // plugins/streams/editor.ts
+  var el = (tag, className = "", text = "") => {
+    const element = document.createElement(tag);
+    element.className = className;
+    element.textContent = text;
+    return element;
+  };
+  var languageSelect = (value, withNone, onChange) => {
+    const select = el("select", "mys-input mys-streams-select");
+    const options = [
+      ...withNone ? [["", "No subtitles"]] : [],
+      [ORIGINAL, languageName(ORIGINAL)],
+      ...LANGUAGES.map(({ code, name }) => [code, name])
+    ];
+    options.forEach(([code, name]) => select.append(new Option(name, code, false, code === (value ?? ""))));
+    select.addEventListener("change", () => onChange(select.value === "" ? null : select.value));
+    return select;
+  };
+  var rulesEditor = (initial, onChange) => {
+    let rules = initial.map((rule) => ({ ...rule }));
+    const list = el("div", "mys-streams-rules");
+    const commit = (next) => {
+      rules = next;
+      onChange(rules.map((rule) => ({ ...rule })));
+      render2();
+    };
+    const move2 = (index, offset) => {
+      const next = [...rules];
+      const [rule] = next.splice(index, 1);
+      next.splice(index + offset, 0, rule);
+      commit(next);
+    };
+    const render2 = () => {
+      list.replaceChildren(...rules.map((rule, index) => {
+        const row2 = el("div", "mys-row mys-streams-rule");
+        row2.dataset.rule = String(index);
+        const up = el("button", "mys-button mys-streams-icon", "\u2191");
+        const down = el("button", "mys-button mys-streams-icon", "\u2193");
+        const remove = el("button", "mys-button mys-streams-icon", "\u2715");
+        up.title = "Move up";
+        down.title = "Move down";
+        remove.title = "Remove";
+        up.disabled = index === 0;
+        down.disabled = index === rules.length - 1;
+        remove.disabled = rules.length === 1;
+        up.addEventListener("click", () => move2(index, -1));
+        down.addEventListener("click", () => move2(index, 1));
+        remove.addEventListener("click", () => commit(rules.filter((_, other) => other !== index)));
+        row2.append(
+          el("span", "mys-streams-rank", `${index + 1}.`),
+          el("span", "mys-muted", "Audio"),
+          languageSelect(rule.audio, false, (audio) => commit(rules.map((other, at) => at === index ? { ...other, audio } : other))),
+          el("span", "mys-muted", "Subtitles"),
+          languageSelect(rule.subtitles, true, (subtitles) => commit(rules.map((other, at) => at === index ? { ...other, subtitles } : other))),
+          up,
+          down,
+          remove
+        );
+        return row2;
+      }));
+      const add = el("button", "mys-button", "Add a language");
+      add.dataset.mysAddRule = "";
+      add.addEventListener("click", () => commit([...rules, { audio: "en", subtitles: null }]));
+      list.append(add);
+    };
+    render2();
+    return list;
+  };
+  var languagePanel = (options) => {
+    const panel = el("div", "mys-panel");
+    panel.style.width = "680px";
+    panel.dataset.mysStreamsPanel = "";
+    panel.append(el("h2", "", "Stream languages"));
+    panel.append(el("div", "mys-muted", "Streams are chosen by the first line that has results. Releases that do not state a language count as the original language of the title."));
+    if (options.titleName !== null) {
+      const section = el("div");
+      section.dataset.mysTitleRules = "";
+      const render2 = (rules) => {
+        section.replaceChildren(el("h3", "", `For ${options.titleName}`));
+        if (rules === null) {
+          const customise = el("button", "mys-button", "Set languages for this title");
+          customise.addEventListener("click", () => {
+            options.onTitleRules(options.defaultRules);
+            render2(options.defaultRules);
+          });
+          section.append(el("div", "mys-muted", `Uses the default: ${options.defaultRules.map(ruleLabel).join(", then ")}.`), customise);
+          return;
+        }
+        const reset = el("button", "mys-button", "Use the default instead");
+        reset.addEventListener("click", () => {
+          options.onTitleRules(null);
+          render2(null);
+        });
+        section.append(rulesEditor(rules, options.onTitleRules), reset);
+      };
+      render2(options.titleRules);
+      panel.append(section);
+    }
+    const defaults2 = el("div");
+    defaults2.dataset.mysDefaultRules = "";
+    defaults2.append(el("h3", "", "Default for all titles"), rulesEditor(options.defaultRules, options.onDefaultRules));
+    panel.append(defaults2);
+    const order = el("label", "mys-row");
+    const quality2 = el("input", "mys-switch");
+    quality2.type = "checkbox";
+    quality2.checked = options.defaultOrder === "quality-first";
+    quality2.addEventListener("change", () => options.onDefaultOrder(quality2.checked ? "quality-first" : "language-first"));
+    order.append(quality2, el("span", "", "Put quality before language by default"));
+    panel.append(el("h3", "", "Order"), order, el("div", "mys-muted", "Off: only your best available language is shown, best quality first. On: every language in your list is shown, grouped by quality."));
+    return panel;
+  };
+
+  // plugins/streams/styles.css
+  var styles_default2 = `[data-mys-streams-native] { display: none !important; }
+/* The app's addon filter is replaced by the one in our toolbar. */
+[data-mys-streams-toolbar] [class*="select-input-container-"] { display: none !important; }
+
+.mys-streams {
+    flex: 1;
+    align-self: stretch;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 16px 16px;
+    color: #fff;
+}
+.mys-streams-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 10px; }
+.mys-streams-status { font-size: 13px; opacity: .8; padding-bottom: 8px; }
+.mys-streams-select { flex: 0 1 auto; appearance: auto; }
+.mys-streams-select option { color: #000; }
+
+.mys-streams-heading {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 10px 4px 6px;
+    font-weight: 600;
+    background: #14122b;
+}
+.mys-streams-divider {
+    margin-top: 18px;
+    padding: 12px 4px 0;
+    border-top: 1px solid rgba(255, 255, 255, .15);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    opacity: .7;
+}
+.mys-streams-more { display: block; margin: 16px auto 0; }
+
+.mys-stream {
+    display: flex;
+    gap: 14px;
+    padding: 12px;
+    margin-bottom: 6px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .05);
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+.mys-stream:hover, .mys-stream:focus { background: rgba(255, 255, 255, .12); outline: none; }
+.mys-stream-label { flex: 0 0 96px; white-space: pre-line; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.mys-stream-body { flex: 1; min-width: 0; }
+.mys-stream-title { font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+.mys-stream-facts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; font-size: 12px; opacity: .85; }
+.mys-stream-language { padding: 1px 8px; border-radius: 9px; background: rgba(123, 91, 245, .45); }
+
+.mys-streams-rules { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.mys-streams-rule { gap: 8px; }
+.mys-streams-rank { width: 18px; opacity: .7; }
+.mys-streams-icon { padding: 6px 11px; }
+.mys-streams-icon:disabled { opacity: .3; cursor: default; }
+`;
+
+  // plugins/streams/view.ts
+  var el2 = (tag, className = "", text = "") => {
+    const element = document.createElement(tag);
+    element.className = className;
+    element.textContent = text;
+    return element;
+  };
+  var formatSize = (bytes) => bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+  var hrefOf = ({ deepLinks }) => deepLinks?.player ?? deepLinks?.externalPlayer?.web ?? deepLinks?.externalPlayer?.streaming ?? deepLinks?.externalPlayer?.download ?? null;
+  var row = ({ stream, addon, info, languages }) => {
+    const href = hrefOf(stream);
+    const element = el2("a", "mys-stream");
+    if (href !== null) {
+      element.href = href;
+      if (!href.startsWith("#")) element.target = "_blank";
+    }
+    const label = el2("div", "mys-stream-label", stream.name ?? addon);
+    const body = el2("div", "mys-stream-body");
+    const facts = el2("div", "mys-stream-facts");
+    languages.forEach((code) => facts.append(el2("span", "mys-stream-language", languageName(code))));
+    if (info.stated.length === 0) facts.lastElementChild?.setAttribute("title", "Assumed: the release does not state a language");
+    if (info.sizeBytes !== null) facts.append(el2("span", "", formatSize(info.sizeBytes)));
+    if (info.seeders !== null) facts.append(el2("span", "", `${info.seeders} seeders`));
+    facts.append(el2("span", "mys-muted", addon));
+    body.append(el2("div", "mys-stream-title", info.title), facts);
+    element.append(label, body);
+    return element;
+  };
+  var sections2 = (parts) => parts.flatMap(({ quality: quality2, streams: streams2 }) => {
+    const heading = el2("div", "mys-streams-heading", `${QUALITY_LABELS[quality2]} `);
+    heading.append(el2("span", "mys-muted", String(streams2.length)));
+    heading.dataset.quality = quality2;
+    return [heading, ...streams2.map(row)];
+  });
+  var count = (parts) => parts.reduce((total, { streams: streams2 }) => total + streams2.length, 0);
+  var summary = ({ rules, selection, order, loading }) => {
+    if (selection.rule === null) {
+      return loading > 0 ? "Looking for streams\u2026" : "None of your languages were found. Showing everything.";
+    }
+    if (order === "quality-first") {
+      return `Showing ${rules.map(ruleLabel).join(", ")}`;
+    }
+    const shown = `Showing ${ruleLabel(rules[selection.rule])}`;
+    return selection.rule === 0 || loading > 0 ? shown : `${shown}. No ${ruleLabel(rules[0])} found.`;
+  };
+  var render = (container, model, actions) => {
+    const toolbar = el2("div", "mys-streams-toolbar");
+    const languages = el2("button", "mys-button", model.usesTitleRules ? "Languages (this title)" : "Languages");
+    languages.dataset.mysLanguages = "";
+    languages.addEventListener("click", actions.onEditLanguages);
+    const order = el2("button", "mys-button", model.order === "language-first" ? "Language first" : "Quality first");
+    order.dataset.mysOrder = model.order;
+    order.title = "Switch between best language first and best quality first";
+    order.addEventListener("click", actions.onToggleOrder);
+    toolbar.append(languages, order);
+    if (model.addons.length > 1) {
+      const addon = el2("select", "mys-input mys-streams-select");
+      addon.append(new Option("All addons", "", false, model.addon === null));
+      model.addons.forEach((name) => addon.append(new Option(name, name, false, model.addon === name)));
+      addon.addEventListener("change", () => actions.onAddon(addon.value === "" ? null : addon.value));
+      toolbar.append(addon);
+    }
+    const status = el2("div", "mys-streams-status", summary(model));
+    status.dataset.mysStreamsStatus = "";
+    if (model.loading > 0) {
+      status.append(el2("span", "mys-muted", `  ${model.loading} addon${model.loading === 1 ? "" : "s"} still loading`));
+    }
+    const list = el2("div", "mys-streams-list");
+    list.append(...sections2(model.selection.shown));
+    const hidden = count(model.selection.others);
+    if (hidden > 0 && !model.showOthers) {
+      const more = el2("button", "mys-button mys-streams-more", `Show other languages (${hidden})`);
+      more.dataset.mysShowOthers = "";
+      more.addEventListener("click", actions.onShowOthers);
+      list.append(more);
+    } else if (hidden > 0) {
+      const divider = el2("div", "mys-streams-divider", "Other languages");
+      divider.dataset.mysOthers = "";
+      list.append(divider, ...sections2(model.selection.others));
+    }
+    container.replaceChildren(toolbar, status, list);
+  };
+
+  // plugins/streams/index.ts
+  var CINEMETA = "https://v3-cinemeta.strem.io/meta";
+  var activate2 = (api) => {
+    const originals = /* @__PURE__ */ new Map();
+    const toasted = /* @__PURE__ */ new Set();
+    const originalLanguage = (type, id) => {
+      const known = originals.get(id);
+      if (known) return known;
+      const lookup = (id.startsWith("tt") ? fetch(`${CINEMETA}/${type}/${id}.json`) : Promise.reject(new Error("unknown id"))).then((response) => response.json()).then(({ meta }) => languageOfCountry(meta?.country)).catch(() => "en");
+      originals.set(id, lookup);
+      return lookup;
+    };
+    const defaultRules = () => api.storage.get("rules", DEFAULT_RULES);
+    const titleRules = (id) => api.storage.get("titleRules", {})[id] ?? null;
+    const defaultOrder = () => api.storage.get("order", "language-first");
+    const setTitleRules = (id, rules) => {
+      const all = { ...api.storage.get("titleRules", {}) };
+      if (rules === null) {
+        delete all[id];
+      } else {
+        all[id] = rules;
+      }
+      api.storage.set("titleRules", all);
+    };
+    const openLanguages = (title) => {
+      api.ui.panel(languagePanel({
+        titleName: title?.name ?? null,
+        titleRules: title ? titleRules(title.id) : null,
+        defaultRules: defaultRules(),
+        defaultOrder: defaultOrder(),
+        onTitleRules: (rules) => title && setTitleRules(title.id, rules),
+        onDefaultRules: (rules) => api.storage.set("rules", rules),
+        onDefaultOrder: (order) => api.storage.set("order", order)
+      }));
+    };
+    api.ui.settingsEntry("Stream languages", () => openLanguages(null));
+    api.anchors.watch("streams.toolbar", (toolbar) => {
+      toolbar.dataset.mysStreamsToolbar = "";
+      return () => delete toolbar.dataset.mysStreamsToolbar;
+    });
+    api.anchors.watch("streams.list", (native) => {
+      const container = document.createElement("div");
+      container.className = "mys-streams";
+      container.dataset.mysStreams = "";
+      native.dataset.mysStreamsNative = "";
+      native.insertAdjacentElement("afterend", container);
+      let disposed = false;
+      let showOthers = false;
+      let orderOverride = null;
+      let addon = null;
+      let current2 = "";
+      let drawing = 0;
+      const draw = async () => {
+        const turn = ++drawing;
+        const state = await api.core.getState("meta_details");
+        const meta = state.selected?.metaPath;
+        if (disposed || !meta) return;
+        const original = await originalLanguage(meta.type, meta.id);
+        if (disposed || turn !== drawing) return;
+        const video = state.selected?.streamPath?.id ?? meta.id;
+        if (video !== current2) {
+          current2 = video;
+          showOthers = false;
+          addon = null;
+        }
+        const ready = state.streams.filter((group) => group.content.type === "Ready");
+        const addons = ready.map((group) => group.addon.manifest.name);
+        const rows = ready.filter((group) => addon === null || group.addon.manifest.name === addon).flatMap((group) => (group.content.type === "Ready" ? group.content.content : []).map((stream) => {
+          const info = describeStream(stream);
+          return { stream, addon: group.addon.manifest.name, info, languages: audioLanguages(info, original) };
+        }));
+        const rules = titleRules(meta.id) ?? defaultRules();
+        const order = orderOverride ?? defaultOrder();
+        const selection = selectStreams(rows.map((entry) => ({ stream: entry, languages: entry.languages, quality: entry.info.quality })), rules, original, order);
+        const loading = state.streams.filter((group) => group.content.type === "Loading").length;
+        const name = state.metaItem?.content?.content?.name ?? "this title";
+        render(container, {
+          loading,
+          rules,
+          usesTitleRules: titleRules(meta.id) !== null,
+          order,
+          selection,
+          showOthers,
+          addons,
+          addon: addons.includes(addon ?? "") ? addon : null
+        }, {
+          onEditLanguages: () => openLanguages({ id: meta.id, name }),
+          onToggleOrder: () => {
+            orderOverride = order === "language-first" ? "quality-first" : "language-first";
+            draw();
+          },
+          onShowOthers: () => {
+            showOthers = true;
+            draw();
+          },
+          onAddon: (value) => {
+            addon = value;
+            draw();
+          }
+        });
+        if (loading === 0 && rows.length > 0 && addon === null && order === "language-first" && !toasted.has(video)) {
+          toasted.add(video);
+          if (selection.rule === null) {
+            api.ui.toast({ title: "None of your languages were found. Showing every stream." });
+          } else if (selection.rule > 0) {
+            api.ui.toast({ title: `No ${ruleLabel(rules[0])} audio found. Showing ${ruleLabel(rules[selection.rule])}.` });
+          }
+        }
+      };
+      const stopState = api.core.on("state", (models) => {
+        if (models.includes("meta_details")) draw();
+      });
+      const stopStorage = api.storage.onChange(draw);
+      draw();
+      return () => {
+        disposed = true;
+        stopState();
+        stopStorage();
+        container.remove();
+        delete native.dataset.mysStreamsNative;
+      };
+    });
+  };
+  var streams = {
+    manifest: {
+      id: "streams",
+      name: "Stream languages",
+      version: "1.0.0",
+      apiVersion: 0,
+      description: "Shows streams in your languages first, grouped by quality, with a language list per title.",
+      entry: "index.js",
+      anchors: ["streams.list", "streams.toolbar"]
+    },
+    css: styles_default2,
+    activate: activate2
+  };
+
   // src/host/account.ts
   var API_URL = "https://api.strem.io/api/";
   var BACKUPS_KEY = "mystremio:addon-backups";
@@ -786,6 +1312,18 @@
     root?.append(backdrop);
     return close;
   };
+  var settingsEntry = (label, onOpen) => watchAnchor("settings.menu", (menu) => {
+    const sections3 = [...menu.querySelectorAll("[data-section], [data-mys-settings-entry]")];
+    const sibling = menu.querySelector("[data-section]");
+    const last = sections3[sections3.length - 1];
+    if (!sibling || !last) return;
+    const button = h("div", { textContent: label, title: label, tabIndex: 0 });
+    button.className = [...sibling.classList].filter((name) => !name.startsWith("selected-")).join(" ");
+    button.dataset.mysSettingsEntry = label;
+    button.addEventListener("click", onOpen);
+    last.insertAdjacentElement("afterend", button);
+    return () => button.remove();
+  });
   var confirm = ({ title, message, confirmLabel = "Continue" }) => new Promise((resolve) => {
     let answer = false;
     const cancel = h("button", { className: "mys-button", textContent: "Cancel" });
@@ -821,11 +1359,11 @@
     if (eocd < 0) {
       throw new Error("Not a zip file");
     }
-    const count = view.getUint16(eocd + 10, true);
+    const count2 = view.getUint16(eocd + 10, true);
     let offset = view.getUint32(eocd + 16, true);
     const decoder2 = new TextDecoder();
     const files = /* @__PURE__ */ new Map();
-    for (let index = 0; index < count; index += 1) {
+    for (let index = 0; index < count2; index += 1) {
       if (view.getUint32(offset, true) !== CENTRAL_SIGNATURE) {
         throw new Error("Corrupt zip file");
       }
@@ -931,7 +1469,12 @@
         }
       },
       account: { getAddonCollection, setAddonCollection },
-      ui: { toast, confirm }
+      ui: {
+        toast,
+        confirm,
+        panel: (content, onClose) => track(openPanel(content, onClose)),
+        settingsEntry: (label, onOpen) => track(settingsEntry(label, onOpen))
+      }
     };
   };
   var deactivate = (plugin) => {
@@ -945,7 +1488,7 @@
     document.querySelector(`style[data-mystremio-plugin="${plugin.manifest.id}"]`)?.remove();
     plugin.active = false;
   };
-  var activate2 = async (plugin) => {
+  var activate3 = async (plugin) => {
     const { id, anchors = [] } = plugin.manifest;
     plugin.error = null;
     try {
@@ -1011,7 +1554,7 @@
     }
     plugins.set(plugin.manifest.id, plugin);
     if (pluginState(plugin.manifest.id, plugin.bundled).enabled) {
-      await activate2(plugin);
+      await activate3(plugin);
     }
   };
   var startPlugins = async (transport, container, bundled) => {
@@ -1050,7 +1593,7 @@
       settings.plugins[id] = { ...pluginState(id, plugin.bundled), enabled };
     });
     if (enabled && !plugin.active) {
-      await activate2(plugin);
+      await activate3(plugin);
     } else if (!enabled) {
       deactivate(plugin);
     }
@@ -1167,22 +1710,10 @@
     const stop = onPluginsChange(() => renderList(list));
     openPanel(panel, stop);
   };
-  var startPluginsPage = () => {
-    watchAnchor("settings.menu", (menu) => {
-      const sibling = menu.querySelector("[data-section]");
-      if (!sibling) return;
-      const button = h("div", { textContent: "Plugins", title: "Plugins", tabIndex: 0 });
-      button.className = [...sibling.classList].filter((name) => !name.startsWith("selected-")).join(" ");
-      button.dataset.mysPluginsButton = "";
-      button.addEventListener("click", openPluginsPage);
-      const lastSection = [...menu.querySelectorAll("[data-section]")].pop();
-      lastSection.insertAdjacentElement("afterend", button);
-      return () => button.remove();
-    });
-  };
+  var startPluginsPage = () => settingsEntry("Plugins", openPluginsPage);
 
   // src/host/index.ts
-  var BUNDLED = [addonReorder];
+  var BUNDLED = [addonReorder, streams];
   var whenBodyExists = () => new Promise((resolve) => {
     if (document.body) {
       resolve();
