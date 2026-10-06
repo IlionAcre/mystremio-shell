@@ -653,6 +653,105 @@ ${filename}`),
   };
   var streamRequestUrl = (transportUrl, type, videoId) => `${transportUrl.slice(0, -MANIFEST.length)}/stream/${encodeURIComponent(type)}/${encodeURIComponent(videoId)}.json`;
 
+  // plugins/streams/player.ts
+  var PLAYER = "https://embed69.org";
+  var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+  var SUPPORTED_SERVERS = ["vidhide"];
+  var LANGUAGES2 = {
+    LAT: { audio: "es-419", label: "Latino" },
+    ESP: { audio: "es-ES", label: "Castellano" },
+    // Subtitled entries keep the original audio.
+    SUB: { audio: null, label: "Subtitulado" }
+  };
+  var playerPath = (videoId) => {
+    const [id, season, episode] = videoId.split(":");
+    if (!id || !/^tt\d+$/.test(id)) return null;
+    if (season === void 0 || episode === void 0) return id;
+    return `${id}-${Number(season)}x${String(Number(episode)).padStart(2, "0")}`;
+  };
+  var constant = (html, name) => new RegExp(`${name}\\s*=\\s*["']?([^"';\\s]+)["']?`).exec(html)?.[1] ?? null;
+  var readEntries = (html) => {
+    const match = /dataLink\s*=\s*(\[[\s\S]*?\]);/.exec(html);
+    if (!match) return [];
+    try {
+      const entries = JSON.parse(match[1]);
+      return Array.isArray(entries) ? entries : [];
+    } catch {
+      return [];
+    }
+  };
+  var sha256 = async (text) => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  var hex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  var solveKey = async (challenge, difficulty, salt, limit = 2e6) => {
+    const prefix = "0".repeat(difficulty);
+    for (let nonce = 0; nonce < limit; nonce += 1) {
+      if (hex(await sha256(challenge + nonce)).startsWith(prefix)) {
+        return sha256(challenge + nonce + salt);
+      }
+    }
+    return null;
+  };
+  var decryptLink = async (encoded, keyBytes) => {
+    try {
+      const raw = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+      const key = await crypto.subtle.importKey("raw", keyBytes.slice(0, 32), { name: "AES-CBC" }, false, ["decrypt"]);
+      const plain = await crypto.subtle.decrypt({ name: "AES-CBC", iv: raw.slice(0, 16) }, key, raw.slice(16));
+      return new TextDecoder().decode(plain);
+    } catch {
+      return null;
+    }
+  };
+  var unpack = (html) => {
+    const match = /eval\(function\(p,a,c,k,e,d\)\{.*?\}\('([\s\S]*?)',(\d+),(\d+),'([\s\S]*?)'\.split\('\|'\)/.exec(html);
+    if (!match) return "";
+    const radix = Number(match[2]);
+    const words = match[4].split("|");
+    return match[1].replace(/\b\w+\b/g, (word) => words[parseInt(word, radix)] || word);
+  };
+  var findPlaylist = (html) => /https?:[^"'\s\\]+\.m3u8[^"'\s\\]*/.exec(`${html}
+${unpack(html)}`)?.[0] ?? null;
+  var tallestVariant = (playlist, base) => {
+    const lines = playlist.split("\n").map((line) => line.trim());
+    const variants = lines.flatMap((line, index) => {
+      const height = Number(/^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line)?.[1]);
+      const address = lines.slice(index + 1).find((next) => next !== "" && !next.startsWith("#"));
+      return Number.isFinite(height) && address ? [{ height, url: new URL(address, base).href }] : [];
+    });
+    return variants.sort((a, b) => b.height - a.height)[0] ?? null;
+  };
+  var playerStreams = async (videoId, fetchText) => {
+    const path = playerPath(videoId);
+    if (path === null) return [];
+    const html = await fetchText(`${PLAYER}/f/${path}/`, { "User-Agent": USER_AGENT });
+    const entries = readEntries(html);
+    const challenge = constant(html, "POW_CHALLENGE");
+    const salt = constant(html, "POW_SALT");
+    const difficulty = Number(constant(html, "POW_DIFFICULTY"));
+    if (entries.length === 0 || challenge === null || salt === null || !Number.isInteger(difficulty) || difficulty > 5) return [];
+    const key = await solveKey(challenge, difficulty, salt);
+    if (key === null) return [];
+    const streams2 = [];
+    for (const entry of entries) {
+      const language2 = LANGUAGES2[entry.video_language];
+      if (!language2) continue;
+      for (const embed of (entry.sortedEmbeds ?? []).filter(({ servername }) => SUPPORTED_SERVERS.includes(servername))) {
+        try {
+          const page = await decryptLink(embed.link, key);
+          if (page === null || !page.startsWith("https://")) continue;
+          const headers = { "User-Agent": USER_AGENT, Referer: `${new URL(page).origin}/` };
+          const master = findPlaylist(await fetchText(page, { "User-Agent": USER_AGENT, Referer: `${PLAYER}/` }));
+          if (master === null) continue;
+          const playlist = await fetchText(master, headers).catch(() => "");
+          if (!playlist.startsWith("#EXTM3U")) continue;
+          const variant = tallestVariant(playlist, master);
+          streams2.push({ url: variant?.url ?? master, headers, server: embed.servername, label: language2.label, audio: language2.audio, height: variant?.height ?? null });
+        } catch {
+        }
+      }
+    }
+    return streams2;
+  };
+
   // plugins/streams/rules.ts
   var DEFAULT_PREFERENCE = {
     audio: ["es-419", "es", "en"],
@@ -862,7 +961,7 @@ ${filename}`),
       status.append(el2("span", "mys-muted", `  ${model.loading} addon${model.loading === 1 ? "" : "s"} still loading`));
     }
     if (model.asking !== null) {
-      const asking = el2("span", "mys-muted", `  Asking addons for more in ${model.asking}\u2026`);
+      const asking = el2("span", "mys-muted", `  ${model.asking}\u2026`);
       asking.dataset.mysAsking = "";
       status.append(asking);
     }
@@ -882,6 +981,8 @@ ${filename}`),
     return typeof stream.infoHash === "string" ? `${stream.infoHash}:${stream.fileIdx ?? ""}` : null;
   };
   var capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+  var PLAYER_NAME = "Latino player";
+  var qualityOfHeight = (height) => height === null ? "other" : height >= 2e3 ? "4k" : height >= 1e3 ? "1080p" : height >= 700 ? "720p" : "other";
   var CINEMETA = "https://v3-cinemeta.strem.io/meta";
   var activate2 = (api) => {
     const originals = /* @__PURE__ */ new Map();
@@ -889,6 +990,25 @@ ${filename}`),
     const extras = /* @__PURE__ */ new Map();
     const asking = /* @__PURE__ */ new Map();
     const redraws = /* @__PURE__ */ new Set();
+    const players = /* @__PURE__ */ new Map();
+    const askPlayer = (video) => {
+      if (players.has(video)) return;
+      const entry = { pending: true, items: [] };
+      players.set(video, entry);
+      playerStreams(video, api.net.fetchText).then(async (found) => {
+        for (const stream of found) {
+          const encoded = await api.core.encodeStream({
+            url: stream.url,
+            name: PLAYER_NAME,
+            description: `${stream.label} \xB7 ${stream.server}`
+          });
+          entry.items.push({ ...stream, encoded });
+        }
+      }).catch(() => console.warn("[mystremio] the streaming player did not answer")).finally(() => {
+        entry.pending = false;
+        redraw();
+      });
+    };
     const redraw = () => redraws.forEach((draw) => draw());
     const askByLanguage = (type, video, addons, keys) => {
       const id = `${video}|${keys.join(",")}`;
@@ -1033,9 +1153,25 @@ ${filename}`),
         const known = new Set(ready.flatMap((group) => (group.content.type === "Ready" ? group.content.content : []).map((stream) => identityOf(stream))));
         const template = ready.flatMap((group) => group.content.type === "Ready" ? group.content.content : []).find((stream) => stream.deepLinks?.player)?.deepLinks?.player?.split("/");
         const metaTransport = template?.[4] ?? encodeURIComponent(state.metaItem?.addon?.transportUrl ?? "");
+        askPlayer(video);
+        const player = players.get(video);
+        if (addon === null || addon === PLAYER_NAME) {
+          player.items.forEach((stream) => {
+            const link = `#/player/${encodeURIComponent(stream.encoded)}/${metaTransport}/${metaTransport}/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}/${encodeURIComponent(video)}`;
+            const shaped = {
+              name: `${PLAYER_NAME}
+${stream.height === null ? "" : `${stream.height}p`}`,
+              description: `${stream.label} \xB7 ${stream.server} \xB7 plays without RealDebrid`,
+              deepLinks: { player: link }
+            };
+            const info = { ...describeStream(shaped), stated: stream.audio === null ? [] : [stream.audio], multi: false, subtitledOnly: false, quality: qualityOfHeight(stream.height) };
+            rows.push({ stream: shaped, addon: PLAYER_NAME, info, languages: [stream.audio ?? original] });
+          });
+        }
+        if (player.items.length > 0) addons.push(PLAYER_NAME);
         (extras.get(search) ?? []).filter((extra) => !known.has(extra.identity) && (addon === null || extra.addon === addon)).forEach(({ addon: name, transportUrl, stream, encoded }) => {
-          const player = `#/player/${encodeURIComponent(encoded)}/${encodeURIComponent(transportUrl)}/${metaTransport}/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}/${encodeURIComponent(video)}`;
-          const shaped = { name: stream.name, description: stream.description ?? stream.title, behaviorHints: stream.behaviorHints, deepLinks: { player } };
+          const player2 = `#/player/${encodeURIComponent(encoded)}/${encodeURIComponent(transportUrl)}/${metaTransport}/${encodeURIComponent(meta.type)}/${encodeURIComponent(meta.id)}/${encodeURIComponent(video)}`;
+          const shaped = { name: stream.name, description: stream.description ?? stream.title, behaviorHints: stream.behaviorHints, deepLinks: { player: player2 } };
           const info = describeStream(shaped);
           rows.push({ stream: shaped, addon: name, info, languages: audioLanguages(info, original) });
         });
@@ -1051,7 +1187,7 @@ ${filename}`),
           addons,
           addon: addons.includes(addon ?? "") ? addon : null,
           customLanguages: isCustom(meta.id),
-          asking: asking.has(search) ? capitalize(asking.get(search)) : null
+          asking: asking.has(search) ? `Asking addons for more in ${capitalize(asking.get(search))}` : player.pending ? "Checking the streaming player" : null
         }, {
           onEditLanguages: () => openLanguages(title),
           onToggleOrder: () => {
@@ -1063,7 +1199,7 @@ ${filename}`),
             draw();
           }
         });
-        if (loading === 0 && !asking.has(search) && rows.length > 0 && addon === null && order === "language-first" && !toasted.has(video)) {
+        if (loading === 0 && !asking.has(search) && !player.pending && rows.length > 0 && addon === null && order === "language-first" && !toasted.has(video)) {
           toasted.add(video);
           if (selection.language === null) {
             api.ui.toast({ title: "None of your languages were found. Showing every stream." });
@@ -1095,7 +1231,7 @@ ${filename}`),
     manifest: {
       id: "streams",
       name: "Stream languages",
-      version: "1.3.0",
+      version: "1.4.0",
       apiVersion: 0,
       description: "Shows streams in your languages first, grouped by quality, with audio and subtitle languages per title.",
       entry: "index.js",
@@ -1256,8 +1392,8 @@ ${filename}`),
       listPlugins: async () => read(),
       savePlugin: async (plugin) => write([...read().filter(({ id }) => id !== plugin.id), plugin]),
       removePlugin: async (id) => write(read().filter((plugin) => plugin.id !== id)),
-      fetchUrl: async (url) => {
-        const response = await fetch(url);
+      fetchUrl: async (url, headers) => {
+        const response = await fetch(url, { headers });
         if (!response.ok) {
           throw new Error(`Download failed with status ${response.status}`);
         }
@@ -1303,7 +1439,7 @@ ${filename}`),
       listPlugins: () => call("list-plugins"),
       savePlugin: (plugin) => call("save-plugin", plugin),
       removePlugin: (id) => call("remove-plugin", { id }),
-      fetchUrl: async (url) => fromBase64(await call("fetch-url", { url }))
+      fetchUrl: async (url, headers = {}) => fromBase64(await call("fetch-url", { url, headers }))
     };
   };
   var createBackend = () => {
@@ -1694,6 +1830,9 @@ ${filename}`),
             }
           }));
         }
+      },
+      net: {
+        fetchText: async (url, headers) => decoder.decode(await backend.fetchUrl(url, headers))
       },
       account: { getAddonCollection, setAddonCollection },
       ui: {

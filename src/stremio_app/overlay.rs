@@ -90,7 +90,8 @@ fn handle(plugins: &Path, method: &str, params: &Value) -> Result<Value, String>
         }
         "fetch-url" => {
             let url = params["url"].as_str().ok_or("Missing url")?;
-            fetch_url(url).map(|bytes| json!(STANDARD.encode(bytes)))
+            fetch_url(url, &request_headers(&params["headers"]))
+                .map(|bytes| json!(STANDARD.encode(bytes)))
         }
         _ => Err(format!("Unknown overlay method: {method}")),
     }
@@ -198,7 +199,23 @@ fn remove_plugin(plugins: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
+/// Headers a plugin may set on a download. Sites that serve video pages check these.
+const ALLOWED_HEADERS: [&str; 4] = ["referer", "user-agent", "origin", "accept"];
+
+fn request_headers(headers: &Value) -> Vec<(String, String)> {
+    headers
+        .as_object()
+        .map(|headers| {
+            headers
+                .iter()
+                .filter(|(name, _)| ALLOWED_HEADERS.contains(&name.to_lowercase().as_str()))
+                .filter_map(|(name, value)| Some((name.to_owned(), value.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn fetch_url(url: &str, headers: &[(String, String)]) -> Result<Vec<u8>, String> {
     let url = url::Url::parse(url).map_err(|error| format!("Invalid url: {error}"))?;
     if url.scheme() != "https" {
         return Err("Plugins can only be downloaded over https".to_owned());
@@ -206,7 +223,14 @@ fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
     let response = reqwest::blocking::Client::builder()
         .timeout(DOWNLOAD_TIMEOUT)
         .build()
-        .and_then(|client| client.get(url).send())
+        .and_then(|client| {
+            headers
+                .iter()
+                .fold(client.get(url), |request, (name, value)| {
+                    request.header(name.as_str(), value.as_str())
+                })
+                .send()
+        })
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("Download failed: {error}"))?;
     let mut bytes = vec![];
@@ -314,7 +338,26 @@ mod tests {
 
     #[test]
     fn only_https_downloads_are_allowed() {
-        assert!(fetch_url("http://example.com/plugin.zip").is_err());
-        assert!(fetch_url("file:///C:/plugin.zip").is_err());
+        assert!(fetch_url("http://example.com/plugin.zip", &[]).is_err());
+        assert!(fetch_url("file:///C:/plugin.zip", &[]).is_err());
+    }
+
+    #[test]
+    fn only_listed_request_headers_are_passed_on() {
+        let headers = request_headers(&json!({
+            "Referer": "https://example.com/",
+            "User-Agent": "test",
+            "Cookie": "session=1",
+            "Authorization": "Bearer x",
+            "Accept": 5,
+        }));
+        assert_eq!(
+            headers,
+            vec![
+                ("Referer".to_owned(), "https://example.com/".to_owned()),
+                ("User-Agent".to_owned(), "test".to_owned()),
+            ]
+        );
+        assert!(request_headers(&Value::Null).is_empty());
     }
 }
