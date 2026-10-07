@@ -710,14 +710,20 @@ ${filename}`),
   };
   var findPlaylist = (html) => /https?:[^"'\s\\]+\.m3u8[^"'\s\\]*/.exec(`${html}
 ${unpack(html)}`)?.[0] ?? null;
-  var tallestVariant = (playlist, base) => {
+  var renditions = (playlist, base) => {
     const lines = playlist.split("\n").map((line) => line.trim());
-    const variants = lines.flatMap((line, index) => {
-      const height = Number(/^#EXT-X-STREAM-INF:.*RESOLUTION=\d+x(\d+)/.exec(line)?.[1]);
+    const found = lines.flatMap((line, index) => {
+      if (!line.startsWith("#EXT-X-STREAM-INF:")) return [];
+      const height = Number(/RESOLUTION=\d+x(\d+)/.exec(line)?.[1]);
+      const bitrate = Number(/[:,]BANDWIDTH=(\d+)/.exec(line)?.[1]);
       const address = lines.slice(index + 1).find((next) => next !== "" && !next.startsWith("#"));
-      return Number.isFinite(height) && address ? [{ height, url: new URL(address, base).href }] : [];
+      return Number.isFinite(height) && address ? [{ height, url: new URL(address, base).href, bitrate: Number.isFinite(bitrate) ? bitrate : null }] : [];
     });
-    return variants.sort((a, b) => b.height - a.height)[0] ?? null;
+    const byHeight = /* @__PURE__ */ new Map();
+    found.forEach((rendition) => {
+      if (!byHeight.has(rendition.height)) byHeight.set(rendition.height, rendition);
+    });
+    return [...byHeight.values()].sort((a, b) => b.height - a.height);
   };
   var playerStreams = async (videoId, fetchText) => {
     const path = playerPath(videoId);
@@ -743,8 +749,12 @@ ${unpack(html)}`)?.[0] ?? null;
           if (master === null) continue;
           const playlist = await fetchText(master, headers).catch(() => "");
           if (!playlist.startsWith("#EXTM3U")) continue;
-          const variant = tallestVariant(playlist, master);
-          streams2.push({ url: variant?.url ?? master, headers, server: embed.servername, label: language2.label, audio: language2.audio, height: variant?.height ?? null });
+          const common = { headers, server: embed.servername, label: language2.label, audio: language2.audio };
+          const offered = renditions(playlist, master);
+          if (offered.length === 0) {
+            streams2.push({ ...common, url: master, height: null, bitrate: null });
+          }
+          offered.forEach(({ url, height, bitrate }) => streams2.push({ ...common, url, height, bitrate }));
         } catch {
         }
       }
@@ -1161,7 +1171,7 @@ ${unpack(html)}`)?.[0] ?? null;
             const shaped = {
               name: `${PLAYER_NAME}
 ${stream.height === null ? "" : `${stream.height}p`}`,
-              description: `${stream.label} \xB7 ${stream.server} \xB7 plays without RealDebrid`,
+              description: [stream.label, stream.server, stream.bitrate === null ? null : `${(stream.bitrate / 1e6).toFixed(1)} Mbit/s`, "plays without RealDebrid"].filter(Boolean).join(" \xB7 "),
               deepLinks: { player: link }
             };
             const info = { ...describeStream(shaped), stated: stream.audio === null ? [] : [stream.audio], multi: false, subtitledOnly: false, quality: qualityOfHeight(stream.height) };
@@ -1231,7 +1241,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     manifest: {
       id: "streams",
       name: "Stream languages",
-      version: "1.4.0",
+      version: "1.5.0",
       apiVersion: 0,
       description: "Shows streams in your languages first, grouped by quality, with audio and subtitle languages per title.",
       entry: "index.js",
