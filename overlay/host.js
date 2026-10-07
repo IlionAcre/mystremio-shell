@@ -556,11 +556,11 @@ ${filename}`),
   var languagePanel = (options) => {
     let draft = { audio: [...options.preference.audio], subtitles: [...options.preference.subtitles] };
     const forTitle = options.titleName !== null;
-    const panel = el("div", "mys-panel");
-    panel.style.width = "560px";
+    const panel = el("div", options.embedded ? "mys-languages-embedded" : "mys-panel");
+    if (!options.embedded) panel.style.width = "560px";
     panel.dataset.mysStreamsPanel = forTitle ? "title" : "default";
+    if (!options.embedded) panel.append(el("h2", "", forTitle ? `Languages for ${options.titleName}` : "Stream languages"));
     panel.append(
-      el("h2", "", forTitle ? `Languages for ${options.titleName}` : "Stream languages"),
       el("div", "mys-muted", forTitle ? options.isCustom ? "This title has its own languages." : "This title uses your default languages. Changes saved here apply to this title only." : "Used for every title that does not have its own languages."),
       languageList("audio", draft.audio, (audio) => {
         draft = { ...draft, audio };
@@ -883,6 +883,8 @@ ${unpack(html)}`)?.[0] ?? null;
 .mys-languages-option { border: 0; border-radius: 14px; padding: 6px 12px; background: rgba(255, 255, 255, .1); color: inherit; font: inherit; cursor: pointer; }
 .mys-languages-option:hover { background: #7b5bf5; }
 .mys-languages-actions { margin-top: 20px; }
+.mys-languages-embedded { max-width: 560px; }
+.mys-languages-embedded h3 { margin: 18px 0 8px; font-size: 15px; font-weight: 600; }
 `;
 
   // plugins/streams/view.ts
@@ -1109,12 +1111,35 @@ ${unpack(html)}`)?.[0] ?? null;
       const id = state.selected?.metaPath?.id;
       return id ? { id, name: state.metaItem?.content?.content?.name ?? "this title" } : null;
     };
-    api.ui.settingsEntry("Stream languages", () => openLanguages(null));
+    api.ui.settingsSection("Stream languages", (body) => {
+      const draw = () => body.replaceChildren(languagePanel({
+        titleName: null,
+        preference: defaultPreference(),
+        isCustom: false,
+        defaultOrder: defaultOrder(),
+        embedded: true,
+        onSave: (preference) => {
+          api.storage.set("preference", preference);
+          api.ui.toast({ type: "success", title: "Default languages saved" });
+        },
+        onReset: () => {
+        },
+        onDefaultOrder: (order) => api.storage.set("order", order)
+      }));
+      draw();
+    });
     api.anchors.watch("meta.actions", (actions) => {
-      const sibling = [...actions.querySelectorAll('[class*="action-button-container-"]')].filter((button2) => !/(^| )wide-/.test(button2.className)).pop();
+      const round = [...actions.querySelectorAll('[class*="action-button-container-"]')].filter((entry) => !/(^| )wide-/.test(entry.className)).pop();
+      const grouped = actions.querySelector('[class*="group-container-"] > [class*="icon-container-"]:not([class*="disabled-"])') ?? actions.querySelector('[class*="group-container-"] > [class*="icon-container-"]');
+      const sibling = round ?? grouped;
       if (!sibling) return;
       const button = document.createElement("div");
-      button.className = sibling.className;
+      button.className = [...sibling.classList].filter((name) => !name.startsWith("disabled-")).join(" ");
+      const frame = round ? button : document.createElement("div");
+      if (!round) {
+        frame.className = sibling.parentElement.className;
+        frame.append(button);
+      }
       button.tabIndex = 0;
       button.title = LANGUAGES_HINT;
       button.dataset.mysTitleLanguages = "";
@@ -1125,8 +1150,8 @@ ${unpack(html)}`)?.[0] ?? null;
         const title = await currentTitle();
         if (title) openLanguages(title);
       });
-      actions.append(button);
-      return () => button.remove();
+      actions.append(frame);
+      return () => frame.remove();
     });
     api.anchors.watch("streams.toolbar", (toolbar) => {
       toolbar.dataset.mysStreamsToolbar = "";
@@ -1245,11 +1270,11 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     manifest: {
       id: "streams",
       name: "Stream languages",
-      version: "1.6.0",
+      version: "1.7.0",
       apiVersion: 0,
       description: "Shows streams in your languages first, grouped by quality, with audio and subtitle languages per title.",
       entry: "index.js",
-      anchors: ["streams.list", "streams.toolbar", "meta.actions"]
+      anchors: ["streams.list", "streams.toolbar", "meta.actions", "settings.menu"]
     },
     css: styles_default2,
     activate: activate2
@@ -1649,6 +1674,14 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
 .mys-plugin-name { font-weight: 600; }
 .mys-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: rgba(255,255,255,.1); margin-left: 8px; font-weight: 400; }
 .mys-badge[data-kind="error"] { background: #e5484d; }
+.mys-settings-control { display: flex; justify-content: flex-end; align-items: center; }
+.mys-settings-hint { margin: -6px 0 14px; max-width: 480px; }
+[data-mys-settings-section] .mys-muted { opacity: 1; color: rgba(255, 255, 255, .62); }
+.mys-settings-install { flex-wrap: wrap; justify-content: flex-end; }
+.mys-settings-install .mys-input { flex: 1 1 180px; }
+[data-failed] .mys-muted { color: #ff8a8e; opacity: 1; }
+/* While one of our sections is in view, the app's own marked entry steps back. */
+[data-mys-settings-active] > [class*="selected-"]:not([data-mys-settings-entry]) { background-color: transparent !important; opacity: .4 !important; }
 `;
   var root = null;
   var toasts = null;
@@ -1690,17 +1723,62 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     root?.append(backdrop);
     return close;
   };
-  var settingsEntry = (label, onOpen) => watchAnchor("settings.menu", (menu) => {
-    const sections3 = [...menu.querySelectorAll("[data-section], [data-mys-settings-entry]")];
-    const sibling = menu.querySelector("[data-section]");
-    const last = sections3[sections3.length - 1];
-    if (!sibling || !last) return;
+  var BEFORE_SECTION = "streaming";
+  var classOf = (element) => element?.getAttribute("class") ?? "";
+  var settingsSection = (label, mount) => watchAnchor("settings.menu", (menu) => {
+    const container = menu.parentElement?.querySelector('[class*="sections-container-"]');
+    const entries = [...menu.querySelectorAll("[data-section]")];
+    const reference = entries.find((entry) => entry.dataset.section === BEFORE_SECTION) ?? entries[entries.length - 1];
+    if (!container || !reference) return;
+    const titled = [...container.children].filter((child) => !child.hasAttribute("data-mys-settings-section") && child.querySelector(':scope > [class*="label-"]'));
+    const template = titled[0];
+    const target = titled[entries.indexOf(reference) - 1] ?? null;
+    const sample = template?.querySelector(':scope [class*="option-"]');
     const button = h("div", { textContent: label, title: label, tabIndex: 0 });
-    button.className = [...sibling.classList].filter((name) => !name.startsWith("selected-")).join(" ");
+    const selected = [...menu.querySelectorAll('[class*="selected-"]')].flatMap((entry) => [...entry.classList]).find((name) => name.startsWith("selected-"));
+    button.className = [...reference.classList].filter((name) => !name.startsWith("selected-")).join(" ");
     button.dataset.mysSettingsEntry = label;
-    button.addEventListener("click", onOpen);
-    last.insertAdjacentElement("afterend", button);
-    return () => button.remove();
+    reference.insertAdjacentElement("beforebegin", button);
+    const title = h("div", { textContent: label });
+    title.className = classOf(template?.querySelector(':scope > [class*="label-"]'));
+    const body = h("div", { className: "mys-settings-body" });
+    const section = h("div", {}, [title, body]);
+    section.className = classOf(template);
+    section.dataset.mysSettingsSection = label;
+    container.insertBefore(section, target);
+    const kit = {
+      option: (name, control, hint) => {
+        const heading = h("div", {}, [h("div", { textContent: name })]);
+        heading.className = classOf(sample?.querySelector(':scope > [class*="heading-"]'));
+        heading.firstElementChild.className = classOf(sample?.querySelector(':scope > [class*="heading-"] > [class*="label-"]'));
+        const content = h("div", { className: `${classOf(sample?.querySelector(':scope > [class*="content-"]'))} mys-settings-control` }, [control]);
+        const row2 = h("div", {}, [heading, content]);
+        row2.className = classOf(sample);
+        return hint ? h("div", { className: "mys-settings-option" }, [row2, h("div", { className: "mys-muted mys-settings-hint", textContent: hint })]) : row2;
+      }
+    };
+    const mark = () => {
+      const top = container.scrollTop + 50;
+      const start2 = section.offsetTop - container.offsetTop;
+      const active = top >= start2 && top < start2 + section.offsetHeight;
+      if (selected) button.classList.toggle(selected, active);
+      if (active) {
+        menu.dataset.mysSettingsActive = label;
+      } else if (menu.dataset.mysSettingsActive === label) {
+        delete menu.dataset.mysSettingsActive;
+      }
+    };
+    button.addEventListener("click", () => container.scrollTo({ top: section.offsetTop - container.offsetTop, behavior: "smooth" }));
+    container.addEventListener("scroll", mark);
+    mark();
+    const unmount = mount(body, kit);
+    return () => {
+      unmount?.();
+      container.removeEventListener("scroll", mark);
+      if (menu.dataset.mysSettingsActive === label) delete menu.dataset.mysSettingsActive;
+      button.remove();
+      section.remove();
+    };
   });
   var confirm = ({ title, message, confirmLabel = "Continue" }) => new Promise((resolve) => {
     let answer = false;
@@ -1859,7 +1937,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
         toast,
         confirm,
         panel: (content, onClose) => track(openPanel(content, onClose)),
-        settingsEntry: (label, onOpen) => track(settingsEntry(label, onOpen))
+        settingsSection: (label, mount) => track(settingsSection(label, mount))
       }
     };
   };
@@ -2024,9 +2102,8 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     }
   };
   var confirmInstall = () => confirm({ title: "Install plugin?", message: INSTALL_WARNING, confirmLabel: "Install" });
-  var renderList = (list) => {
-    const entries = listPlugins();
-    list.replaceChildren(...entries.map(({ manifest, bundled, active, error }) => {
+  var renderList = (list, kit) => {
+    list.replaceChildren(...listPlugins().map(({ manifest, bundled, active, error }) => {
       const toggle = h("input", { type: "checkbox", className: "mys-switch", checked: active, title: "Enabled" });
       toggle.addEventListener("change", () => setPluginEnabled(manifest.id, toggle.checked));
       const remove = h("button", { className: "mys-button", textContent: "Remove", dataset: { danger: "" } });
@@ -2038,26 +2115,14 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
           });
         }
       });
-      return h("div", { className: "mys-plugin mys-row", dataset: { plugin: manifest.id } }, [
-        h("div", {}, [
-          h("div", { className: "mys-plugin-name" }, [
-            manifest.name,
-            h("span", { className: "mys-badge", textContent: `v${manifest.version}` }),
-            ...bundled ? [h("span", { className: "mys-badge", textContent: "Built in" })] : [],
-            ...error !== null ? [h("span", { className: "mys-badge", textContent: "Failed", title: error, dataset: { kind: "error" } })] : []
-          ]),
-          h("div", { className: "mys-muted", textContent: error ?? manifest.description ?? "" })
-        ]),
-        h("div", { className: "mys-spacer" }),
-        ...bundled ? [] : [remove],
-        toggle
-      ]);
+      const state = error !== null ? `Failed: ${error}` : [`v${manifest.version}`, bundled ? "Built in" : null, manifest.description].filter(Boolean).join(" \xB7 ");
+      const row2 = kit.option(manifest.name, h("div", { className: "mys-row" }, [...bundled ? [] : [remove], toggle]), state);
+      row2.dataset.plugin = manifest.id;
+      if (error !== null) row2.dataset.failed = "";
+      return row2;
     }));
-    if (entries.length === 0) {
-      list.append(h("div", { className: "mys-plugin mys-muted", textContent: "No plugins installed." }));
-    }
   };
-  var openPluginsPage = () => {
+  var mountPlugins = (body, kit) => {
     const list = h("div", { dataset: { mysPluginList: "" } });
     const url = h("input", { className: "mys-input", placeholder: "https://example.com/plugin.zip", type: "url" });
     const installUrl = h("button", { className: "mys-button", textContent: "Install", dataset: { primary: "" } });
@@ -2082,21 +2147,15 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
         return `${manifest.name} installed`;
       });
     });
-    const panel = h("div", { className: "mys-panel", dataset: { mysPluginsPage: "" } }, [
-      h("h2", { textContent: "Plugins" }),
-      h("div", { className: "mys-muted", textContent: "Plugins change how the app looks and behaves." }),
-      h("h3", { textContent: "Installed" }),
+    body.dataset.mysPluginsPage = "";
+    body.append(
       list,
-      h("h3", { textContent: "Install a plugin" }),
-      h("div", { className: "mys-row" }, [url, installUrl, chooseFile, file]),
-      h("p", { className: "mys-muted", textContent: INSTALL_WARNING })
-    ]);
-    panel.style.width = "640px";
-    renderList(list);
-    const stop = onPluginsChange(() => renderList(list));
-    openPanel(panel, stop);
+      kit.option("Install a plugin", h("div", { className: "mys-row mys-settings-install" }, [url, installUrl, chooseFile, file]), INSTALL_WARNING)
+    );
+    renderList(list, kit);
+    return onPluginsChange(() => renderList(list, kit));
   };
-  var startPluginsPage = () => settingsEntry("Plugins", openPluginsPage);
+  var startPluginsPage = () => settingsSection("Plugins", mountPlugins);
 
   // src/host/index.ts
   var BUNDLED = [addonReorder, streams];
