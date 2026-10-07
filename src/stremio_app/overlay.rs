@@ -93,6 +93,7 @@ fn handle(plugins: &Path, method: &str, params: &Value) -> Result<Value, String>
             fetch_url(url, &request_headers(&params["headers"]))
                 .map(|bytes| json!(STANDARD.encode(bytes)))
         }
+        "hls-proxy" => Ok(json!(super::hls_proxy::base_url())),
         _ => Err(format!("Unknown overlay method: {method}")),
     }
 }

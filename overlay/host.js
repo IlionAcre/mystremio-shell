@@ -656,7 +656,10 @@ ${filename}`),
   // plugins/streams/player.ts
   var PLAYER = "https://embed69.org";
   var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
-  var SUPPORTED_SERVERS = ["vidhide"];
+  var SERVERS = {
+    vidhide: { mirror: null },
+    streamwish: { mirror: "hgplaycdn.com" }
+  };
   var LANGUAGES2 = {
     LAT: { audio: "es-419", label: "Latino" },
     ESP: { audio: "es-ES", label: "Castellano" },
@@ -736,30 +739,31 @@ ${unpack(html)}`)?.[0] ?? null;
     if (entries.length === 0 || challenge === null || salt === null || !Number.isInteger(difficulty) || difficulty > 5) return [];
     const key = await solveKey(challenge, difficulty, salt);
     if (key === null) return [];
-    const streams2 = [];
-    for (const entry of entries) {
-      const language2 = LANGUAGES2[entry.video_language];
-      if (!language2) continue;
-      for (const embed of (entry.sortedEmbeds ?? []).filter(({ servername }) => SUPPORTED_SERVERS.includes(servername))) {
-        try {
-          const page = await decryptLink(embed.link, key);
-          if (page === null || !page.startsWith("https://")) continue;
-          const headers = { "User-Agent": USER_AGENT, Referer: `${new URL(page).origin}/` };
-          const master = findPlaylist(await fetchText(page, { "User-Agent": USER_AGENT, Referer: `${PLAYER}/` }));
-          if (master === null) continue;
-          const playlist = await fetchText(master, headers).catch(() => "");
-          if (!playlist.startsWith("#EXTM3U")) continue;
-          const common = { headers, server: embed.servername, label: language2.label, audio: language2.audio };
-          const offered = renditions(playlist, master);
-          if (offered.length === 0) {
-            streams2.push({ ...common, url: master, height: null, bitrate: null });
-          }
-          offered.forEach(({ url, height, bitrate }) => streams2.push({ ...common, url, height, bitrate }));
-        } catch {
-        }
+    const readServer = async (embed, language2) => {
+      try {
+        const link = await decryptLink(embed.link, key);
+        if (link === null || !link.startsWith("https://")) return [];
+        const { mirror } = SERVERS[embed.servername];
+        const address = new URL(link);
+        if (mirror !== null) address.host = mirror;
+        const page = address.href;
+        const headers = { "User-Agent": USER_AGENT, Referer: `${new URL(page).origin}/` };
+        const master = findPlaylist(await fetchText(page, { "User-Agent": USER_AGENT, Referer: `${PLAYER}/` }));
+        if (master === null) return [];
+        const playlist = await fetchText(master, headers).catch(() => "");
+        if (!playlist.startsWith("#EXTM3U")) return [];
+        const common = { headers, server: embed.servername, label: language2.label, audio: language2.audio };
+        const offered = renditions(playlist, master);
+        return offered.length === 0 ? [{ ...common, url: master, height: null, bitrate: null }] : offered.map(({ url, height, bitrate }) => ({ ...common, url, height, bitrate }));
+      } catch {
+        return [];
       }
-    }
-    return streams2;
+    };
+    const pending = entries.flatMap((entry) => {
+      const language2 = LANGUAGES2[entry.video_language];
+      return language2 === void 0 ? [] : (entry.sortedEmbeds ?? []).filter(({ servername }) => servername in SERVERS).map((embed) => readServer(embed, language2));
+    });
+    return (await Promise.all(pending)).flat();
   };
 
   // plugins/streams/rules.ts
@@ -1008,7 +1012,7 @@ ${unpack(html)}`)?.[0] ?? null;
       playerStreams(video, api.net.fetchText).then(async (found) => {
         for (const stream of found) {
           const encoded = await api.core.encodeStream({
-            url: stream.url,
+            url: await api.net.accelerateHls(stream.url),
             name: PLAYER_NAME,
             description: `${stream.label} \xB7 ${stream.server}`
           });
@@ -1241,7 +1245,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     manifest: {
       id: "streams",
       name: "Stream languages",
-      version: "1.5.0",
+      version: "1.6.0",
       apiVersion: 0,
       description: "Shows streams in your languages first, grouped by quality, with audio and subtitle languages per title.",
       entry: "index.js",
@@ -1408,7 +1412,8 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
           throw new Error(`Download failed with status ${response.status}`);
         }
         return new Uint8Array(await response.arrayBuffer());
-      }
+      },
+      hlsProxy: async () => null
     };
   };
   var REQUEST_TIMEOUT = 6e4;
@@ -1449,7 +1454,8 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
       listPlugins: () => call("list-plugins"),
       savePlugin: (plugin) => call("save-plugin", plugin),
       removePlugin: (id) => call("remove-plugin", { id }),
-      fetchUrl: async (url, headers = {}) => fromBase64(await call("fetch-url", { url, headers }))
+      fetchUrl: async (url, headers = {}) => fromBase64(await call("fetch-url", { url, headers })),
+      hlsProxy: () => call("hls-proxy").catch(() => null)
     };
   };
   var createBackend = () => {
@@ -1842,7 +1848,11 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
         }
       },
       net: {
-        fetchText: async (url, headers) => decoder.decode(await backend.fetchUrl(url, headers))
+        fetchText: async (url, headers) => decoder.decode(await backend.fetchUrl(url, headers)),
+        accelerateHls: async (url) => {
+          const base = await backend.hlsProxy();
+          return base === null ? url : `${base}/playlist.m3u8?u=${encodeURIComponent(url)}`;
+        }
       },
       account: { getAddonCollection, setAddonCollection },
       ui: {

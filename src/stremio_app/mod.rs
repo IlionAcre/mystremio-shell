@@ -3,6 +3,7 @@ pub use app::MainWindow;
 pub mod discord;
 pub mod external_player;
 pub mod gpu_video_processing;
+pub mod hls_proxy;
 pub mod ipc;
 pub mod stremio_player;
 pub mod stremio_server;
