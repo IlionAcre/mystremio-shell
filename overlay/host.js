@@ -354,6 +354,224 @@
     activate
   };
 
+  // plugins/board/arrange.ts
+  var EMPTY_LAYOUT = { order: [], hidden: [] };
+  var CONTINUE_WATCHING = "continue-watching";
+  var catalogKey = (addonId, type, id) => `${addonId}|${type}|${id}`;
+  var arrange = (rows, layout) => {
+    const rank2 = new Map(layout.order.map((key, index) => [key, index]));
+    const hidden = new Set(layout.hidden);
+    return rows.map((row2, index) => ({ row: row2, index })).sort((a, b) => (rank2.get(a.row.key) ?? layout.order.length + a.index) - (rank2.get(b.row.key) ?? layout.order.length + b.index)).map(({ row: row2 }, position) => ({ ...row2, position, hidden: hidden.has(row2.key) }));
+  };
+  var reorder = (rows, layout, keys) => {
+    const rest = arrange(rows, layout).map((row2) => row2.key).filter((key) => !keys.includes(key));
+    return { ...layout, order: [...keys, ...rest] };
+  };
+  var setHidden = (layout, key, hidden) => ({
+    ...layout,
+    hidden: hidden ? [.../* @__PURE__ */ new Set([...layout.hidden, key])] : layout.hidden.filter((other) => other !== key)
+  });
+
+  // plugins/board/styles.css
+  var styles_default2 = "/* The app's rows are reordered and hidden with styles, never moved in the document. */\n[data-mys-board] { display: flex !important; flex-direction: column; }\n[data-mys-board] > * { flex: none; }\n[data-mys-board] > [data-mys-board-hidden] { display: none !important; }\n\n.mys-board-shortcut { display: flex; justify-content: flex-end; padding: 6px 24px 0; }\n.mys-board-shortcut .mys-button { opacity: .7; font-size: 13px; padding: 6px 14px; }\n.mys-board-shortcut .mys-button:hover { opacity: 1; }\n\n.mys-board-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }\n.mys-board-item {\n    display: flex;\n    align-items: center;\n    gap: 10px;\n    padding: 8px 8px 8px 12px;\n    border-radius: 10px;\n    background: rgba(255, 255, 255, .07);\n    color: #fff;\n    user-select: none;\n    touch-action: none;\n}\n[data-mys-board-shown] > .mys-board-item { cursor: grab; }\n.mys-board-item[data-dragging] { background: rgba(123, 91, 245, .45); cursor: grabbing; }\n.mys-board-grip { display: flex; opacity: .6; }\n.mys-board-grip svg { width: 18px; height: 18px; fill: currentColor; }\n.mys-board-text { flex: 1; min-width: 0; }\n.mys-board-text .mys-muted { font-size: 12px; }\n.mys-board-item .mys-button { padding: 5px 14px; font-size: 13px; }\n.mys-board-heading { margin: 18px 0 4px; font-size: 15px; font-weight: 600; color: #fff; }\n";
+
+  // plugins/board/index.ts
+  var isRendered = ({ content }) => !(content?.type === "Err" && content.content === "EmptyContent");
+  var GRIP = '<svg viewBox="0 0 24 24"><path d="M9 5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9-14a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>';
+  var el = (tag, className = "", text = "") => {
+    const element = document.createElement(tag);
+    element.className = className;
+    element.textContent = text;
+    return element;
+  };
+  var capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+  var activate2 = (api) => {
+    const layout = () => api.storage.get("layout", EMPTY_LAYOUT);
+    const titles = () => api.storage.get("titles", {});
+    const rows = async () => {
+      const board2 = await api.core.getState("board");
+      return [
+        { key: CONTINUE_WATCHING, label: "Continue watching", source: "Your library" },
+        ...(board2?.catalogs ?? []).map(({ id, name, type, addon }) => ({
+          key: catalogKey(addon.manifest.id, type, id),
+          label: titles()[catalogKey(addon.manifest.id, type, id)] ?? `${name} - ${capitalize(type)}`,
+          source: addon.manifest.name
+        }))
+      ];
+    };
+    api.anchors.watch("board.rows", (content) => {
+      let disposed = false;
+      let nudged = "";
+      const apply = async () => {
+        const [known, board2] = await Promise.all([rows(), api.core.getState("board")]);
+        if (disposed) return;
+        const elements = [...content.children].filter((child) => child instanceof HTMLElement && /(^| )board-row-/.test(child.className));
+        const rendered = (board2?.catalogs ?? []).filter(isRendered);
+        const leading = elements.length - rendered.length;
+        if (leading < 0 || leading > 2) return;
+        const keys = elements.map((element, index) => {
+          if (index >= leading) {
+            const { addon, type, id } = rendered[index - leading];
+            return catalogKey(addon.manifest.id, type, id);
+          }
+          return element.className.includes("continue-watching-row-") ? CONTINUE_WATCHING : null;
+        });
+        const placed = new Map(arrange(known, layout()).map((row2) => [row2.key, row2]));
+        content.dataset.mysBoard = "";
+        const seen = { ...titles() };
+        elements.forEach((element, index) => {
+          const row2 = keys[index] === null ? void 0 : placed.get(keys[index]);
+          if (!row2) return;
+          const title = element.querySelector('[class*="title-"]')?.textContent?.trim();
+          if (title && row2.key !== CONTINUE_WATCHING) seen[row2.key] = title;
+          element.style.order = String(row2.position);
+          element.dataset.mysBoardRow = row2.key;
+          element.toggleAttribute("data-mys-board-hidden", row2.hidden);
+        });
+        if (JSON.stringify(seen) !== JSON.stringify(titles())) api.storage.set("titles", seen);
+        const signature = JSON.stringify([keys, layout()]);
+        if (signature !== nudged) {
+          nudged = signature;
+          content.dispatchEvent(new Event("scroll"));
+        }
+      };
+      const observer = new MutationObserver(apply);
+      observer.observe(content, { childList: true });
+      const stopState = api.core.on("state", (models) => {
+        if (models.includes("board")) apply();
+      });
+      const stopStorage = api.storage.onChange(apply);
+      apply();
+      return () => {
+        disposed = true;
+        observer.disconnect();
+        stopState();
+        stopStorage();
+        delete content.dataset.mysBoard;
+        [...content.children].forEach((child) => {
+          if (!(child instanceof HTMLElement)) return;
+          child.style.order = "";
+          child.removeAttribute("data-mys-board-hidden");
+          delete child.dataset.mysBoardRow;
+        });
+      };
+    });
+    const editor = (body) => {
+      let disposed = false;
+      let dragging = false;
+      let drawn = "";
+      const draw = async () => {
+        if (dragging) return;
+        const known = await rows();
+        if (disposed || dragging) return;
+        const placed = arrange(known, layout());
+        const signature = JSON.stringify(placed);
+        if (signature === drawn) return;
+        drawn = signature;
+        const shown = el("div", "mys-board-list");
+        shown.dataset.mysBoardShown = "";
+        const available = el("div", "mys-board-list");
+        available.dataset.mysBoardAvailable = "";
+        const commit = () => api.storage.set("layout", reorder(known, layout(), [...shown.children].map((child) => child.dataset.key)));
+        placed.forEach((row2) => {
+          const item = el("div", "mys-board-item");
+          item.dataset.key = row2.key;
+          const text = el("div", "mys-board-text");
+          text.append(el("div", "", row2.label), el("div", "mys-muted", row2.source));
+          const action = el("button", "mys-button", row2.hidden ? "Add" : "Remove");
+          action.addEventListener("click", () => api.storage.set("layout", setHidden(layout(), row2.key, !row2.hidden)));
+          if (row2.hidden) {
+            item.append(text, action);
+            available.append(item);
+            return;
+          }
+          const grip = el("span", "mys-board-grip");
+          grip.innerHTML = GRIP;
+          item.append(grip, text, action);
+          item.addEventListener("pointerdown", (down) => {
+            if (down.button !== 0 || down.target.closest("button")) return;
+            down.preventDefault();
+            dragging = true;
+            item.dataset.dragging = "";
+            const onMove = (event) => {
+              const over = [...shown.children].find((other) => {
+                const { top: top2, bottom } = other.getBoundingClientRect();
+                return other !== item && event.clientY >= top2 && event.clientY <= bottom;
+              });
+              if (!over) return;
+              const { top, height } = over.getBoundingClientRect();
+              over.insertAdjacentElement(event.clientY < top + height / 2 ? "beforebegin" : "afterend", item);
+            };
+            const onUp = () => {
+              document.removeEventListener("pointermove", onMove);
+              document.removeEventListener("pointerup", onUp);
+              delete item.dataset.dragging;
+              dragging = false;
+              commit();
+              draw();
+            };
+            document.addEventListener("pointermove", onMove);
+            document.addEventListener("pointerup", onUp);
+          });
+          shown.append(item);
+        });
+        const reset = el("button", "mys-button", "Reset to the default order");
+        reset.dataset.mysBoardReset = "";
+        reset.addEventListener("click", () => api.storage.set("layout", EMPTY_LAYOUT));
+        body.replaceChildren(
+          el("div", "mys-muted", "Drag the sections of the home screen into the order you want. Removed sections are not loaded at all."),
+          shown,
+          ...available.children.length > 0 ? [el("h3", "mys-board-heading", "Available sections"), available] : [],
+          reset
+        );
+      };
+      const stopState = api.core.on("state", (models) => {
+        if (models.includes("board") || models.includes("ctx")) draw();
+      });
+      const stopStorage = api.storage.onChange(draw);
+      draw();
+      return () => {
+        disposed = true;
+        stopState();
+        stopStorage();
+      };
+    };
+    api.ui.settingsSection("Home screen", (body) => {
+      body.dataset.mysBoardEditor = "";
+      return editor(body);
+    });
+    api.slots.add("board.rows", {
+      placement: "before",
+      mount: (slot) => {
+        slot.className = "mys-board-shortcut";
+        const button = el("button", "mys-button", "Customize home");
+        button.dataset.mysBoardCustomize = "";
+        button.addEventListener("click", () => {
+          const panel = el("div", "mys-panel");
+          panel.style.width = "560px";
+          panel.dataset.mysBoardEditor = "";
+          const body = el("div");
+          panel.append(el("h2", "", "Home screen"), body);
+          api.ui.panel(panel, editor(body));
+        });
+        slot.append(button);
+      }
+    });
+  };
+  var board = {
+    manifest: {
+      id: "board",
+      name: "Home screen",
+      version: "1.0.0",
+      apiVersion: 0,
+      description: "Reorder the sections of the home screen, remove the ones you do not want and add them back.",
+      entry: "index.js",
+      anchors: ["board.rows", "settings.menu"]
+    },
+    css: styles_default2,
+    activate: activate2
+  };
+
   // plugins/streams/languages.ts
   var language = (code, name, flags, labels, tags) => ({ code, name, flags, labels, tags });
   var LANGUAGES = [
@@ -460,21 +678,21 @@ ${filename}`),
   };
 
   // plugins/streams/editor.ts
-  var el = (tag, className = "", text = "") => {
+  var el2 = (tag, className = "", text = "") => {
     const element = document.createElement(tag);
     element.className = className;
     element.textContent = text;
     return element;
   };
-  var GRIP = '<svg viewBox="0 0 24 24"><path d="M9 5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9-14a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>';
+  var GRIP2 = '<svg viewBox="0 0 24 24"><path d="M9 5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm9-14a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Zm0 7a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z"/></svg>';
   var languageList = (kind, initial, onChange) => {
     let codes = [...initial];
-    const section = el("div", "mys-languages-section");
+    const section = el2("div", "mys-languages-section");
     section.dataset.mysLanguageList = kind;
-    const rows = el("div", "mys-languages-rows");
-    const add = el("button", "mys-button mys-languages-add", "+ Add a language");
+    const rows = el2("div", "mys-languages-rows");
+    const add = el2("button", "mys-button mys-languages-add", "+ Add a language");
     add.dataset.mysAddLanguage = "";
-    const picker = el("div", "mys-languages-picker");
+    const picker = el2("div", "mys-languages-picker");
     picker.hidden = true;
     const commit = (next) => {
       codes = next;
@@ -504,37 +722,37 @@ ${filename}`),
     };
     const render2 = () => {
       rows.replaceChildren(...codes.map((code) => {
-        const row2 = el("div", "mys-language");
+        const row2 = el2("div", "mys-language");
         row2.dataset.language = code;
-        const grip = el("span", "mys-language-grip");
-        grip.innerHTML = GRIP;
-        const remove = el("button", "mys-button mys-language-remove", "\u2715");
+        const grip = el2("span", "mys-language-grip");
+        grip.innerHTML = GRIP2;
+        const remove = el2("button", "mys-button mys-language-remove", "\u2715");
         remove.title = `Remove ${languageName(code)}`;
         remove.addEventListener("click", () => commit(codes.filter((other) => other !== code)));
         row2.addEventListener("pointerdown", (event) => startDrag(row2, event));
-        row2.append(grip, el("span", "mys-language-name", languageName(code)), remove);
+        row2.append(grip, el2("span", "mys-language-name", languageName(code)), remove);
         return row2;
       }));
       if (codes.length === 0) {
-        rows.append(el("div", "mys-muted", kind === "audio" ? "No audio languages: the original language of each title is used." : "No subtitle languages: subtitles are left alone."));
+        rows.append(el2("div", "mys-muted", kind === "audio" ? "No audio languages: the original language of each title is used." : "No subtitle languages: subtitles are left alone."));
       }
       picker.hidden = true;
     };
     const openPicker = () => {
       const available = [...kind === "audio" ? [ORIGINAL] : [], ...LANGUAGES.map(({ code }) => code)].filter((code) => !codes.includes(code));
-      const search = el("input", "mys-input mys-languages-search");
+      const search = el2("input", "mys-input mys-languages-search");
       search.placeholder = "Search languages";
-      const options = el("div", "mys-languages-options");
+      const options = el2("div", "mys-languages-options");
       const fill = () => {
         const query = search.value.trim().toLowerCase();
         const matches = available.filter((code) => languageName(code).toLowerCase().includes(query));
         options.replaceChildren(...matches.map((code) => {
-          const option = el("button", "mys-languages-option", languageName(code));
+          const option = el2("button", "mys-languages-option", languageName(code));
           option.dataset.language = code;
           option.addEventListener("click", () => commit([...codes, code]));
           return option;
         }));
-        if (matches.length === 0) options.append(el("div", "mys-muted", "No language matches."));
+        if (matches.length === 0) options.append(el2("div", "mys-muted", "No language matches."));
       };
       search.addEventListener("input", fill);
       fill();
@@ -549,45 +767,45 @@ ${filename}`),
         picker.hidden = true;
       }
     });
-    section.append(el("h3", "", kind === "audio" ? "Audio" : "Subtitles"), rows, add, picker);
+    section.append(el2("h3", "", kind === "audio" ? "Audio" : "Subtitles"), rows, add, picker);
     render2();
     return section;
   };
   var languagePanel = (options) => {
     let draft = { audio: [...options.preference.audio], subtitles: [...options.preference.subtitles] };
     const forTitle = options.titleName !== null;
-    const panel = el("div", options.embedded ? "mys-languages-embedded" : "mys-panel");
+    const panel = el2("div", options.embedded ? "mys-languages-embedded" : "mys-panel");
     if (!options.embedded) panel.style.width = "560px";
     panel.dataset.mysStreamsPanel = forTitle ? "title" : "default";
-    if (!options.embedded) panel.append(el("h2", "", forTitle ? `Languages for ${options.titleName}` : "Stream languages"));
+    if (!options.embedded) panel.append(el2("h2", "", forTitle ? `Languages for ${options.titleName}` : "Stream languages"));
     panel.append(
-      el("div", "mys-muted", forTitle ? options.isCustom ? "This title has its own languages." : "This title uses your default languages. Changes saved here apply to this title only." : "Used for every title that does not have its own languages."),
+      el2("div", "mys-muted", forTitle ? options.isCustom ? "This title has its own languages." : "This title uses your default languages. Changes saved here apply to this title only." : "Used for every title that does not have its own languages."),
       languageList("audio", draft.audio, (audio) => {
         draft = { ...draft, audio };
       }),
-      el("div", "mys-muted", "Streams in the first audio language that is available come first. Releases that do not state a language count as the original language of the title."),
+      el2("div", "mys-muted", "Streams in the first audio language that is available come first. Releases that do not state a language count as the original language of the title."),
       languageList("subtitles", draft.subtitles, (subtitles) => {
         draft = { ...draft, subtitles };
       }),
-      el("div", "mys-muted", "Used when the audio is not in one of these languages.")
+      el2("div", "mys-muted", "Used when the audio is not in one of these languages.")
     );
     if (!forTitle) {
-      const order = el("label", "mys-row mys-languages-order");
-      const quality2 = el("input", "mys-switch");
+      const order = el2("label", "mys-row mys-languages-order");
+      const quality2 = el2("input", "mys-switch");
       quality2.type = "checkbox";
       quality2.checked = options.defaultOrder === "quality-first";
       quality2.addEventListener("change", () => options.onDefaultOrder(quality2.checked ? "quality-first" : "language-first"));
-      order.append(quality2, el("span", "", "Sort by quality before language"));
-      panel.append(el("h3", "", "Order"), order);
+      order.append(quality2, el2("span", "", "Sort by quality before language"));
+      panel.append(el2("h3", "", "Order"), order);
     }
-    const actions = el("div", "mys-row mys-languages-actions");
-    const save = el("button", "mys-button", forTitle ? "Save for this title" : "Save");
+    const actions = el2("div", "mys-row mys-languages-actions");
+    const save = el2("button", "mys-button", forTitle ? "Save for this title" : "Save");
     save.dataset.primary = "";
     save.dataset.mysSave = "";
     save.addEventListener("click", () => options.onSave(draft));
-    actions.append(el("div", "mys-spacer"));
+    actions.append(el2("div", "mys-spacer"));
     if (forTitle && options.isCustom) {
-      const reset = el("button", "mys-button", "Use default languages");
+      const reset = el2("button", "mys-button", "Use default languages");
       reset.dataset.mysReset = "";
       reset.addEventListener("click", options.onReset);
       actions.append(reset);
@@ -792,7 +1010,7 @@ ${unpack(html)}`)?.[0] ?? null;
   };
 
   // plugins/streams/styles.css
-  var styles_default2 = `[data-mys-streams-native] { display: none !important; }
+  var styles_default3 = `[data-mys-streams-native] { display: none !important; }
 /* The app's addon filter is replaced by the one in our toolbar. */
 [data-mys-streams-toolbar] [class*="select-input-container-"] { display: none !important; }
 
@@ -899,7 +1117,7 @@ ${unpack(html)}`)?.[0] ?? null;
     "language-first": "Sorted by language first: only your best available language, best quality on top. Click to sort by quality first.",
     "quality-first": "Sorted by quality first: all your languages, grouped by quality. Click to sort by language first."
   };
-  var el2 = (tag, className = "", text = "") => {
+  var el3 = (tag, className = "", text = "") => {
     const element = document.createElement(tag);
     element.className = className;
     element.textContent = text;
@@ -909,28 +1127,28 @@ ${unpack(html)}`)?.[0] ?? null;
   var hrefOf = ({ deepLinks }) => deepLinks?.player ?? deepLinks?.externalPlayer?.web ?? deepLinks?.externalPlayer?.streaming ?? deepLinks?.externalPlayer?.download ?? null;
   var row = ({ stream, addon, info, languages }) => {
     const href = hrefOf(stream);
-    const element = el2("a", "mys-stream");
+    const element = el3("a", "mys-stream");
     if (href !== null) {
       element.href = href;
       if (!href.startsWith("#")) element.target = "_blank";
     }
-    const label = el2("div", "mys-stream-label", stream.name ?? addon);
-    const body = el2("div", "mys-stream-body");
-    const facts = el2("div", "mys-stream-facts");
-    languages.forEach((code) => facts.append(el2("span", "mys-stream-language", languageName(code))));
+    const label = el3("div", "mys-stream-label", stream.name ?? addon);
+    const body = el3("div", "mys-stream-body");
+    const facts = el3("div", "mys-stream-facts");
+    languages.forEach((code) => facts.append(el3("span", "mys-stream-language", languageName(code))));
     if (info.stated.length === 0 || info.subtitledOnly) {
       facts.lastElementChild?.setAttribute("title", "Assumed: the release does not state its audio language");
     }
-    if (info.sizeBytes !== null) facts.append(el2("span", "", formatSize(info.sizeBytes)));
-    if (info.seeders !== null) facts.append(el2("span", "", `${info.seeders} seeders`));
-    facts.append(el2("span", "mys-muted", addon));
-    body.append(el2("div", "mys-stream-title", info.title), facts);
+    if (info.sizeBytes !== null) facts.append(el3("span", "", formatSize(info.sizeBytes)));
+    if (info.seeders !== null) facts.append(el3("span", "", `${info.seeders} seeders`));
+    facts.append(el3("span", "mys-muted", addon));
+    body.append(el3("div", "mys-stream-title", info.title), facts);
     element.append(label, body);
     return element;
   };
   var sections2 = (parts) => parts.flatMap(({ quality: quality2, streams: streams2 }) => {
-    const heading = el2("div", "mys-streams-heading", `${QUALITY_LABELS[quality2]} `);
-    heading.append(el2("span", "mys-muted", String(streams2.length)));
+    const heading = el3("div", "mys-streams-heading", `${QUALITY_LABELS[quality2]} `);
+    heading.append(el3("span", "mys-muted", String(streams2.length)));
     heading.dataset.quality = quality2;
     return [heading, ...streams2.map(row)];
   });
@@ -946,7 +1164,7 @@ ${unpack(html)}`)?.[0] ?? null;
   };
   var LANGUAGES_HINT = "Audio and subtitle languages for this title";
   var languagesButton = (custom, onClick) => {
-    const button = el2("button", "mys-button mys-streams-icon-button");
+    const button = el3("button", "mys-button mys-streams-icon-button");
     button.innerHTML = LANGUAGES_ICON;
     button.dataset.mysLanguages = custom ? "custom" : "default";
     button.title = custom ? `${LANGUAGES_HINT} (this title has its own)` : LANGUAGES_HINT;
@@ -955,9 +1173,9 @@ ${unpack(html)}`)?.[0] ?? null;
     return button;
   };
   var render = (container, model, actions) => {
-    const toolbar = el2("div", "mys-streams-toolbar");
+    const toolbar = el3("div", "mys-streams-toolbar");
     toolbar.append(languagesButton(model.customLanguages, actions.onEditLanguages));
-    const order = el2("button", "mys-button mys-streams-icon-button");
+    const order = el3("button", "mys-button mys-streams-icon-button");
     order.innerHTML = ORDER_ICONS[model.order];
     order.dataset.mysOrder = model.order;
     order.title = ORDER_HINTS[model.order];
@@ -965,26 +1183,26 @@ ${unpack(html)}`)?.[0] ?? null;
     order.addEventListener("click", actions.onToggleOrder);
     toolbar.append(order);
     if (model.addons.length > 1) {
-      const addon = el2("select", "mys-input mys-streams-select");
+      const addon = el3("select", "mys-input mys-streams-select");
       addon.append(new Option("All addons", "", false, model.addon === null));
       model.addons.forEach((name) => addon.append(new Option(name, name, false, model.addon === name)));
       addon.addEventListener("change", () => actions.onAddon(addon.value === "" ? null : addon.value));
       toolbar.append(addon);
     }
-    const status = el2("div", "mys-streams-status", summary(model));
+    const status = el3("div", "mys-streams-status", summary(model));
     status.dataset.mysStreamsStatus = "";
     if (model.loading > 0) {
-      status.append(el2("span", "mys-muted", `  ${model.loading} addon${model.loading === 1 ? "" : "s"} still loading`));
+      status.append(el3("span", "mys-muted", `  ${model.loading} addon${model.loading === 1 ? "" : "s"} still loading`));
     }
     if (model.asking !== null) {
-      const asking = el2("span", "mys-muted", `  ${model.asking}\u2026`);
+      const asking = el3("span", "mys-muted", `  ${model.asking}\u2026`);
       asking.dataset.mysAsking = "";
       status.append(asking);
     }
-    const list = el2("div", "mys-streams-list");
+    const list = el3("div", "mys-streams-list");
     list.append(...sections2(model.selection.shown));
     if (model.selection.others.length > 0) {
-      const divider = el2("div", "mys-streams-divider", "Other languages");
+      const divider = el3("div", "mys-streams-divider", "Other languages");
       divider.dataset.mysOthers = "";
       list.append(divider, ...sections2(model.selection.others));
     }
@@ -996,11 +1214,11 @@ ${unpack(html)}`)?.[0] ?? null;
     if (typeof stream.url === "string") return stream.url;
     return typeof stream.infoHash === "string" ? `${stream.infoHash}:${stream.fileIdx ?? ""}` : null;
   };
-  var capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+  var capitalize2 = (text) => text.charAt(0).toUpperCase() + text.slice(1);
   var PLAYER_NAME = "Latino player";
   var qualityOfHeight = (height) => height === null ? "other" : height >= 2e3 ? "4k" : height >= 1e3 ? "1080p" : height >= 700 ? "720p" : "other";
   var CINEMETA = "https://v3-cinemeta.strem.io/meta";
-  var activate2 = (api) => {
+  var activate3 = (api) => {
     const originals = /* @__PURE__ */ new Map();
     const toasted = /* @__PURE__ */ new Set();
     const extras = /* @__PURE__ */ new Map();
@@ -1226,7 +1444,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
           addons,
           addon: addons.includes(addon ?? "") ? addon : null,
           customLanguages: isCustom(meta.id),
-          asking: asking.has(search) ? `Asking addons for more in ${capitalize(asking.get(search))}` : player.pending ? "Checking the streaming player" : null
+          asking: asking.has(search) ? `Asking addons for more in ${capitalize2(asking.get(search))}` : player.pending ? "Checking the streaming player" : null
         }, {
           onEditLanguages: () => openLanguages(title),
           onToggleOrder: () => {
@@ -1276,8 +1494,8 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
       entry: "index.js",
       anchors: ["streams.list", "streams.toolbar", "meta.actions", "settings.menu"]
     },
-    css: styles_default2,
-    activate: activate2
+    css: styles_default3,
+    activate: activate3
   };
 
   // src/host/account.ts
@@ -1360,6 +1578,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     "streams.list": '[class*="streams-list-container-"] [class*="streams-container-"]',
     "streams.toolbar": '[class*="streams-list-container-"] [class*="select-choices-wrapper-"]',
     "meta.actions": '[class*="metadetails-container-"] [class*="action-buttons-container-"]',
+    "board.rows": '[class^="board-content-"]:not([class*="board-content-container-"])',
     "settings.menu": '[class*="settings-content-"] > [class*="menu-"]',
     "nav.vertical": '[class*="vertical-nav-bar-container-"]'
   };
@@ -1952,7 +2171,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     document.querySelector(`style[data-mystremio-plugin="${plugin.manifest.id}"]`)?.remove();
     plugin.active = false;
   };
-  var activate3 = async (plugin) => {
+  var activate4 = async (plugin) => {
     const { id, anchors = [] } = plugin.manifest;
     plugin.error = null;
     try {
@@ -2018,7 +2237,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
     }
     plugins.set(plugin.manifest.id, plugin);
     if (pluginState(plugin.manifest.id, plugin.bundled).enabled) {
-      await activate3(plugin);
+      await activate4(plugin);
     }
   };
   var startPlugins = async (transport, container, bundled) => {
@@ -2057,7 +2276,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
       settings.plugins[id] = { ...pluginState(id, plugin.bundled), enabled };
     });
     if (enabled && !plugin.active) {
-      await activate3(plugin);
+      await activate4(plugin);
     } else if (!enabled) {
       deactivate(plugin);
     }
@@ -2158,7 +2377,7 @@ ${stream.height === null ? "" : `${stream.height}p`}`,
   var startPluginsPage = () => settingsSection("Plugins", mountPlugins);
 
   // src/host/index.ts
-  var BUNDLED = [addonReorder, streams];
+  var BUNDLED = [addonReorder, streams, board];
   var whenBodyExists = () => new Promise((resolve) => {
     if (document.body) {
       resolve();
